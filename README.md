@@ -14,15 +14,32 @@ others. The API contract is specified in that repository's
 and be resolved to a property and room.
 
 ```
-POST /api/v1/auth/line   { id_token }  ->  { token, expires_at }
-GET  /api/v1/me                        ->  { user_id, tenant_id, property_id,
-                                             property_name, room_id,
-                                             display_name }
-GET  /healthz                          ->  { status }
+POST /api/v1/auth/line          { id_token } -> { token, expires_at }
+GET  /api/v1/me                 -> { user_id, tenant_id, property_id,
+                                     property_name, room_id, display_name }
+GET  /healthz                   -> { status }
 ```
 
-Invoices, payments, meter readings, repairs and announcements are not
-implemented.
+**Phase 2 — tenant features.** In progress, following §10's order. `My Room`
+is covered by `GET /me`; invoices are next.
+
+```
+GET  /api/v1/me/invoices        -> { invoices[], outstanding_satang }
+GET  /api/v1/me/invoices/{id}   -> invoice + items[] + payments[]
+```
+
+Payments, meter readings, repairs and announcements are not implemented.
+
+### Money
+
+Every amount crossing the API is an integer number of **satang**
+(1 THB = 100 satang), never a float and never a pre-formatted string. The
+client decides how to display it.
+
+An invoice's balance is derived as `SUM(items) - SUM(payments)`, never stored.
+A payment can therefore only be inserted, never applied by mutating a running
+total — which keeps balances correct without an interactive transaction, the
+one thing D1 cannot give us.
 
 ## Stack
 

@@ -38,6 +38,8 @@ func (a *API) Routes(allowedOrigins []string) http.Handler {
 		r.Group(func(r chi.Router) {
 			r.Use(a.requireSession)
 			r.Get("/me", a.me)
+			r.Get("/me/invoices", a.listInvoices)
+			r.Get("/me/invoices/{invoiceID}", a.getInvoice)
 		})
 	})
 
@@ -177,4 +179,47 @@ func writeJSON(w http.ResponseWriter, status int, body any) {
 // leaked SQL or LINE error would only reach the user as noise.
 func writeError(w http.ResponseWriter, status int, code string) {
 	writeJSON(w, status, map[string]string{"error": code})
+}
+
+// listInvoices returns every invoice for the caller's tenancy.
+//
+// Amounts are integer satang throughout the API. The client formats them; the
+// server never sends a pre-formatted currency string, so a display change does
+// not need a deploy here.
+func (a *API) listInvoices(w http.ResponseWriter, r *http.Request) {
+	invoices, err := a.Store.InvoicesForUser(r.Context(), userIDFrom(r.Context()))
+	if err != nil {
+		a.Log.ErrorContext(r.Context(), "list invoices failed",
+			"request_id", RequestIDFrom(r.Context()), "error", err)
+		writeError(w, http.StatusInternalServerError, "internal_error")
+		return
+	}
+
+	var outstanding int64
+	for _, inv := range invoices {
+		if inv.DueSatang > 0 {
+			outstanding += inv.DueSatang
+		}
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"invoices":           invoices,
+		"outstanding_satang": outstanding,
+	})
+}
+
+func (a *API) getInvoice(w http.ResponseWriter, r *http.Request) {
+	invoice, err := a.Store.InvoiceForUser(r.Context(),
+		userIDFrom(r.Context()), chi.URLParam(r, "invoiceID"))
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			writeError(w, http.StatusNotFound, "invoice_not_found")
+			return
+		}
+		a.Log.ErrorContext(r.Context(), "get invoice failed",
+			"request_id", RequestIDFrom(r.Context()), "error", err)
+		writeError(w, http.StatusInternalServerError, "internal_error")
+		return
+	}
+	writeJSON(w, http.StatusOK, invoice)
 }

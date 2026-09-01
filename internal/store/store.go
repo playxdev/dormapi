@@ -123,6 +123,22 @@ func scanUser(row map[string]any) *User {
 	}
 }
 
+// number reads an integer column. D1 returns SQLite integers as JSON numbers,
+// which decode into float64; money is stored in satang precisely so that the
+// values stay well inside the range float64 represents exactly.
+func number(v any) int64 {
+	switch t := v.(type) {
+	case float64:
+		return int64(t)
+	case int64:
+		return t
+	case nil:
+		return 0
+	default:
+		return 0
+	}
+}
+
 // text reads a column that D1 returns as JSON. A NULL arrives as nil and
 // becomes the empty string, which is what every caller here wants.
 func text(v any) string {
