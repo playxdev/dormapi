@@ -1,0 +1,7 @@
+.env
+.env.local
+/api
+/bin/
+*.log
+.DS_Store
+*:Zone.Identifier
