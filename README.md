@@ -37,11 +37,32 @@ is covered by `GET /me`; invoices are next.
 GET  /api/v1/me/invoices        -> { invoices[], outstanding_satang }
 GET  /api/v1/me/invoices/{id}   -> invoice + items[] + payments[]
 GET  /api/v1/me/repairs         -> { repairs[] }
-POST /api/v1/me/repairs         -> repair
-GET  /api/v1/me/repairs/{id}    -> repair + events[]
+POST /api/v1/me/repairs         -> ticket
+GET  /api/v1/me/repairs/{id}    -> ticket
+GET  /api/v1/invites/{code}     -> terms to review before confirming
+POST /api/v1/invites/{code}/claim -> binds the caller to the contract's room
 ```
 
 Payments, meter readings and announcements are not implemented.
+
+`/me/repairs` is the tenant's name for what the schema calls a ticket. The wire
+contract also keeps `property_id` and `room_id`, which the schema calls
+buildings and room numbers — the MINI App and the design document both speak of
+properties and rooms, and renaming a deployed contract would buy nothing.
+
+### Onboarding
+
+An invite is an opaque single-use code standing for one contract. Reviewing it
+returns the terms; claiming it binds the caller and records what they saw.
+
+Neither step accepts terms from the client. What the tenant agreed to is copied
+from the contract server-side, so a confirmation cannot be replayed with
+different numbers than the ones shown.
+
+Single use is enforced by the claim's own guard — the update matches only while
+`confirmed_by_user_id` is NULL — because D1 offers no transaction to enforce it
+with. Linking `tenants.user_id` follows as a separate idempotent statement, so
+a failure between the two is repaired by retrying.
 
 ### Money
 
