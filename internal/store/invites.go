@@ -5,8 +5,6 @@ import (
 	"crypto/rand"
 	"fmt"
 	"strings"
-
-	"github.com/google/uuid"
 )
 
 // inviteAlphabet omits characters that are read wrong when a code is spoken
@@ -40,8 +38,8 @@ func NewInviteCode() (string, error) {
 // set of terms the confirmation is taken to cover.
 type InvitePreview struct {
 	Code           string `json:"code"`
-	PropertyName   string `json:"property_name"`
-	RoomCode       string `json:"room_code"`
+	BuildingName   string `json:"building_name"`
+	RoomNumber     string `json:"room_number"`
 	TenantName     string `json:"tenant_name"`
 	RentSatang     int64  `json:"rent_satang"`
 	DepositSatang  int64  `json:"deposit_satang"`
@@ -57,14 +55,14 @@ type InvitePreview struct {
 // tell whoever is probing codes which ones exist.
 func (s *Store) InviteByCode(ctx context.Context, userID, code string) (*InvitePreview, error) {
 	res, err := s.db.Query(ctx, `
-		SELECT i.code, p.name AS property_name, r.code AS room_code,
-		       c.tenant_name, c.rent_satang, c.deposit_satang, c.start_date,
-		       t.id AS tenancy_id, t.user_id AS tenancy_user_id
+		SELECT i.code, b.name AS building_name, r.number AS room_number,
+		       tn.name AS tenant_name, c.rent, c.deposit, c.start_date,
+		       c.confirmed_by_user_id
 		FROM invites i
-		JOIN contracts c  ON c.id = i.contract_id
-		JOIN properties p ON p.id = c.property_id
-		JOIN rooms r      ON r.id = c.room_id
-		LEFT JOIN tenancies t ON t.contract_id = c.id
+		JOIN contracts c ON c.id = i.contract_id
+		JOIN tenants tn  ON tn.id = c.tenant_id
+		JOIN rooms r     ON r.id = c.room_id
+		JOIN buildings b ON b.id = r.building_id
 		WHERE i.code = ?1
 		  AND i.revoked_at IS NULL
 		  AND i.expires_at > datetime('now')
@@ -77,56 +75,80 @@ func (s *Store) InviteByCode(ctx context.Context, userID, code string) (*InviteP
 	}
 
 	row := res.Results[0]
-	claimedBy := text(row["tenancy_user_id"])
+	claimedBy := text(row["confirmed_by_user_id"])
 	return &InvitePreview{
 		Code:           text(row["code"]),
-		PropertyName:   text(row["property_name"]),
-		RoomCode:       text(row["room_code"]),
+		BuildingName:   text(row["building_name"]),
+		RoomNumber:     text(row["room_number"]),
 		TenantName:     text(row["tenant_name"]),
-		RentSatang:     number(row["rent_satang"]),
-		DepositSatang:  number(row["deposit_satang"]),
+		RentSatang:     number(row["rent"]),
+		DepositSatang:  number(row["deposit"]),
 		StartDate:      text(row["start_date"]),
 		AlreadyClaimed: claimedBy != "",
 		ClaimedBySelf:  claimedBy != "" && claimedBy == userID,
 	}, nil
 }
 
-// ClaimInvite binds the caller to the contract's room and records the terms
-// they confirmed.
+// ClaimInvite attaches the caller's account to the contract's tenant record and
+// stores the terms they confirmed.
 //
-// One statement, because D1 permits no parameterised multi-statement write. The
-// invite is not marked used; single use is enforced by the unique index on
-// tenancies.contract_id, so a second claim collides instead of succeeding.
+// One statement, because D1 permits no parameterised multi-statement write.
+// Single use falls out of the guard: the update only matches while
+// confirmed_by_user_id is still NULL, so a second claim changes no rows.
 //
 // The agreed_* columns copy the contract's values at this moment rather than
 // referencing them. If the owner later amends the rent, the tenant's record of
 // what they agreed to must not move with it.
+//
+// Note this leaves tenants.user_id to a second call. The two cannot be one
+// statement, so a failure between them leaves the contract confirmed but the
+// tenant record unlinked — recoverable by retrying the claim, which is why
+// LinkTenantAccount is idempotent.
 func (s *Store) ClaimInvite(ctx context.Context, userID, code string) error {
-	id := uuid.NewString()
-
 	res, err := s.db.Query(ctx, `
-		INSERT INTO tenancies
-			(id, user_id, room_id, property_id, status, contract_id,
-			 agreed_rent_satang, agreed_deposit_satang, agreed_start_date, confirmed_at)
-		SELECT ?1, ?2, c.room_id, c.property_id, 'active', c.id,
-		       c.rent_satang, c.deposit_satang, c.start_date, datetime('now')
-		FROM invites i
-		JOIN contracts c ON c.id = i.contract_id
-		WHERE i.code = ?3
-		  AND i.revoked_at IS NULL
-		  AND i.expires_at > datetime('now')
-		  AND c.status = 'active'`, id, userID, code)
+		UPDATE contracts SET
+			confirmed_by_user_id = ?1,
+			confirmed_at         = datetime('now'),
+			agreed_rent          = rent,
+			agreed_deposit       = deposit,
+			agreed_start_date    = start_date
+		WHERE confirmed_by_user_id IS NULL
+		  AND status = 'active'
+		  AND id = (
+			SELECT i.contract_id FROM invites i
+			WHERE i.code = ?2
+			  AND i.revoked_at IS NULL
+			  AND i.expires_at > datetime('now')
+		  )`, userID, code)
 	if err != nil {
-		// A unique-index violation means someone already claimed this contract.
-		if strings.Contains(err.Error(), "UNIQUE constraint failed") {
-			return ErrAlreadyClaimed
-		}
 		return fmt.Errorf("store: claim invite: %w", err)
 	}
 	if res.Meta.Changes == 0 {
-		// The SELECT matched nothing: unknown, expired, revoked, or the
-		// contract is not active.
+		// Either the invite is unusable, or the contract is already confirmed.
+		// Distinguish so the app can say "you already linked this room".
+		preview, perr := s.InviteByCode(ctx, userID, code)
+		if perr == nil && preview.AlreadyClaimed {
+			return ErrAlreadyClaimed
+		}
 		return ErrNotFound
+	}
+
+	return s.linkTenantAccount(ctx, userID, code)
+}
+
+// linkTenantAccount points the tenant record at the account that confirmed it.
+// Idempotent, so a retry after a partial claim completes the link.
+func (s *Store) linkTenantAccount(ctx context.Context, userID, code string) error {
+	_, err := s.db.Query(ctx, `
+		UPDATE tenants SET user_id = ?1
+		WHERE user_id IS NULL
+		  AND id = (
+			SELECT c.tenant_id FROM invites i
+			JOIN contracts c ON c.id = i.contract_id
+			WHERE i.code = ?2
+		  )`, userID, code)
+	if err != nil {
+		return fmt.Errorf("store: link tenant account: %w", err)
 	}
 	return nil
 }

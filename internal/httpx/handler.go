@@ -90,8 +90,7 @@ func (a *API) authLine(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	user, err := a.Store.UpsertUserByLineID(r.Context(),
-		identity.UserID, identity.DisplayName, identity.PictureURL)
+	user, err := a.Store.UserByLineSubject(r.Context(), identity.UserID, identity.DisplayName)
 	if err != nil {
 		a.Log.ErrorContext(r.Context(), "upsert user failed",
 			"request_id", RequestIDFrom(r.Context()), "error", err)
@@ -116,6 +115,7 @@ func (a *API) authLine(w http.ResponseWriter, r *http.Request) {
 type meResponse struct {
 	UserID       string `json:"user_id"`
 	TenantID     string `json:"tenant_id"`
+	ContractID   string `json:"contract_id"`
 	PropertyID   string `json:"property_id"`
 	PropertyName string `json:"property_name"`
 	RoomID       string `json:"room_id"`
@@ -143,13 +143,18 @@ func (a *API) me(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// property_id and room_id keep their names on the wire even though the
+	// schema calls them buildings and room numbers: the MINI App and the design
+	// document both speak of properties and rooms, and renaming the contract
+	// would break a deployed client for no gain.
 	writeJSON(w, http.StatusOK, meResponse{
 		UserID:       c.User.ID,
 		TenantID:     c.TenantID,
-		PropertyID:   c.PropertyID,
-		PropertyName: c.PropertyName,
-		RoomID:       c.RoomID,
-		DisplayName:  c.User.DisplayName,
+		ContractID:   c.ContractID,
+		PropertyID:   c.BuildingID,
+		PropertyName: c.BuildingName,
+		RoomID:       c.RoomNumber,
+		DisplayName:  c.User.Name,
 	})
 }
 
@@ -230,18 +235,18 @@ func (a *API) getInvoice(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *API) listRepairs(w http.ResponseWriter, r *http.Request) {
-	repairs, err := a.Store.RepairsForUser(r.Context(), userIDFrom(r.Context()))
+	tickets, err := a.Store.TicketsForUser(r.Context(), userIDFrom(r.Context()))
 	if err != nil {
 		a.Log.ErrorContext(r.Context(), "list repairs failed",
 			"request_id", RequestIDFrom(r.Context()), "error", err)
 		writeError(w, http.StatusInternalServerError, "internal_error")
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"repairs": repairs})
+	writeJSON(w, http.StatusOK, map[string]any{"repairs": tickets})
 }
 
 func (a *API) getRepair(w http.ResponseWriter, r *http.Request) {
-	repair, err := a.Store.RepairForUser(r.Context(),
+	ticket, err := a.Store.TicketForUser(r.Context(),
 		userIDFrom(r.Context()), chi.URLParam(r, "repairID"))
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
@@ -253,13 +258,13 @@ func (a *API) getRepair(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "internal_error")
 		return
 	}
-	writeJSON(w, http.StatusOK, repair)
+	writeJSON(w, http.StatusOK, ticket)
 }
 
 type createRepairRequest struct {
-	Category string `json:"category"`
 	Title    string `json:"title"`
 	Detail   string `json:"detail"`
+	Priority string `json:"priority"`
 }
 
 // createRepair files a request against the caller's own tenancy.
@@ -273,8 +278,8 @@ func (a *API) createRepair(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	repair, err := a.Store.CreateRepair(r.Context(),
-		userIDFrom(r.Context()), req.Category, req.Title, req.Detail)
+	ticket, err := a.Store.CreateTicket(r.Context(),
+		userIDFrom(r.Context()), req.Title, req.Detail, req.Priority)
 	if err != nil {
 		switch {
 		case errors.Is(err, store.ErrInvalid):
@@ -289,7 +294,7 @@ func (a *API) createRepair(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeJSON(w, http.StatusCreated, repair)
+	writeJSON(w, http.StatusCreated, ticket)
 }
 
 // getInvite returns the terms a tenant is about to accept.

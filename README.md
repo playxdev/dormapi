@@ -2,11 +2,21 @@
 
 Backend for **dorm.place** — the multi-tenant dormitory management platform.
 
-This service is the platform. The LINE MINI App
-([playxdev/dormmini](https://github.com/playxdev/dormmini)) is one client of
-it; the operator-facing web app and, later, LINE Messaging API webhooks are
-others. The API contract is specified in that repository's
-`docs/DESIGN-LINE-MINI.md` §11.
+This is the tenant-facing API. It is one of three services over **one shared
+D1 database**:
+
+| Repo | Role |
+| --- | --- |
+| [playxdev/dormplace](https://github.com/playxdev/dormplace) | Backoffice. **Owns the schema and its migrations.** |
+| [playxdev/dormmini](https://github.com/playxdev/dormmini) | LINE MINI App, the tenant's client |
+| playxdev/dormapi | This service, serving the MINI App |
+
+**Schema changes belong in `dormplace/migrations`, never here.** A second
+database would make the onboarding flow impossible: a contract activated in the
+backoffice has to be visible to the MINI App.
+
+The wire contract keeps the names the design document uses — `property_id`,
+`room_id` — even though the schema calls them buildings and room numbers.
 
 ## Status
 
@@ -123,13 +133,19 @@ All of this was established by probing the live API, not assumed.
 
 ### Migrations
 
+Run from `dormplace`, which owns them:
+
 ```bash
-wrangler d1 execute dormapi-dev --remote --file ./migrations/0001_init.sql
+wrangler d1 execute dorm-db --remote --file ./migrations/0003_identity_invites.sql
 ```
 
-Money is stored as an integer number of satang. Storing currency as a float
-silently corrupts balances, and this system tracks rent, utilities and
-payments.
+Money is stored as an integer number of satang throughout both services.
+Storing currency as a float silently corrupts balances, and this system tracks
+rent, utilities and payments.
+
+Only **verified** payments count towards what an invoice has been paid. An
+unverified slip has been submitted but not accepted; showing it as settled
+would tell the tenant they owe nothing while the owner still thinks otherwise.
 
 ## Security
 
