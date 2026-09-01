@@ -19,6 +19,10 @@ import (
 // a missing tenancy is a 404 to the client, a missing user is not.
 var ErrNotFound = errors.New("store: not found")
 
+// ErrAlreadyClaimed means the contract behind an invite already has a tenancy.
+// Invites are single use, so this is a second attempt rather than a fault.
+var ErrAlreadyClaimed = errors.New("store: already claimed")
+
 type Store struct {
 	db *d1.Client
 }
@@ -83,6 +87,11 @@ func (s *Store) UserByLineID(ctx context.Context, lineUserID string) (*User, err
 //
 // One statement rather than three: every D1 call is an HTTPS round trip, so an
 // N+1 pattern here would be felt directly by the user.
+//
+// A user can hold more than one active tenancy — a second room, or a room in
+// another property. Until the app offers a property switcher this returns the
+// most recently started one, ordered explicitly so the answer is at least
+// stable rather than whatever the query planner returns first.
 func (s *Store) ContextForUser(ctx context.Context, userID string) (*Context, error) {
 	res, err := s.db.Query(ctx, `
 		SELECT
@@ -96,6 +105,7 @@ func (s *Store) ContextForUser(ctx context.Context, userID string) (*Context, er
 		JOIN properties p ON p.id = t.property_id
 		JOIN rooms r      ON r.id = t.room_id
 		WHERE u.id = ?1
+		ORDER BY t.started_at DESC
 		LIMIT 1`, userID)
 	if err != nil {
 		return nil, fmt.Errorf("store: select context: %w", err)

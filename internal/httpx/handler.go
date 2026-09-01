@@ -43,6 +43,8 @@ func (a *API) Routes(allowedOrigins []string) http.Handler {
 			r.Get("/me/repairs", a.listRepairs)
 			r.Post("/me/repairs", a.createRepair)
 			r.Get("/me/repairs/{repairID}", a.getRepair)
+			r.Get("/invites/{code}", a.getInvite)
+			r.Post("/invites/{code}/claim", a.claimInvite)
 		})
 	})
 
@@ -288,4 +290,48 @@ func (a *API) createRepair(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusCreated, repair)
+}
+
+// getInvite returns the terms a tenant is about to accept.
+//
+// A session is required even though the invite is not yet theirs: knowing who
+// is looking is what makes "you already claimed this" distinguishable from
+// "someone else did".
+func (a *API) getInvite(w http.ResponseWriter, r *http.Request) {
+	preview, err := a.Store.InviteByCode(r.Context(),
+		userIDFrom(r.Context()), strings.ToUpper(strings.TrimSpace(chi.URLParam(r, "code"))))
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			writeError(w, http.StatusNotFound, "invite_not_found")
+			return
+		}
+		a.Log.ErrorContext(r.Context(), "get invite failed",
+			"request_id", RequestIDFrom(r.Context()), "error", err)
+		writeError(w, http.StatusInternalServerError, "internal_error")
+		return
+	}
+	writeJSON(w, http.StatusOK, preview)
+}
+
+// claimInvite binds the caller to the contract's room.
+//
+// The claim carries no terms of its own. What the tenant agreed to is copied
+// from the contract server-side, so the confirmation cannot be replayed with
+// different numbers than the ones that were shown.
+func (a *API) claimInvite(w http.ResponseWriter, r *http.Request) {
+	code := strings.ToUpper(strings.TrimSpace(chi.URLParam(r, "code")))
+
+	err := a.Store.ClaimInvite(r.Context(), userIDFrom(r.Context()), code)
+	switch {
+	case err == nil:
+		writeJSON(w, http.StatusCreated, map[string]string{"status": "claimed"})
+	case errors.Is(err, store.ErrAlreadyClaimed):
+		writeError(w, http.StatusConflict, "invite_already_claimed")
+	case errors.Is(err, store.ErrNotFound):
+		writeError(w, http.StatusNotFound, "invite_not_found")
+	default:
+		a.Log.ErrorContext(r.Context(), "claim invite failed",
+			"request_id", RequestIDFrom(r.Context()), "error", err)
+		writeError(w, http.StatusInternalServerError, "internal_error")
+	}
 }
