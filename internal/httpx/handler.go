@@ -40,6 +40,8 @@ func (a *API) Routes(allowedOrigins []string) http.Handler {
 			r.Get("/me", a.me)
 			r.Get("/me/invoices", a.listInvoices)
 			r.Get("/me/invoices/{invoiceID}", a.getInvoice)
+			r.Get("/me/invoices/{invoiceID}/payment", a.getPaymentInfo)
+			r.Post("/me/invoices/{invoiceID}/payments", a.reportPayment)
 			r.Get("/me/repairs", a.listRepairs)
 			r.Post("/me/repairs", a.createRepair)
 			r.Get("/me/repairs/{repairID}", a.getRepair)
@@ -336,6 +338,59 @@ func (a *API) claimInvite(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "invite_not_found")
 	default:
 		a.Log.ErrorContext(r.Context(), "claim invite failed",
+			"request_id", RequestIDFrom(r.Context()), "error", err)
+		writeError(w, http.StatusInternalServerError, "internal_error")
+	}
+}
+
+// getPaymentInfo returns the QR payloads for one invoice.
+func (a *API) getPaymentInfo(w http.ResponseWriter, r *http.Request) {
+	info, err := a.Store.PaymentInfoForInvoice(r.Context(),
+		userIDFrom(r.Context()), chi.URLParam(r, "invoiceID"))
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			writeError(w, http.StatusNotFound, "invoice_not_found")
+			return
+		}
+		a.Log.ErrorContext(r.Context(), "payment info failed",
+			"request_id", RequestIDFrom(r.Context()), "error", err)
+		writeError(w, http.StatusInternalServerError, "internal_error")
+		return
+	}
+	writeJSON(w, http.StatusOK, info)
+}
+
+type reportPaymentRequest struct {
+	AmountSatang   int64  `json:"amount_satang"`
+	Method         string `json:"method"`
+	Ref            string `json:"ref"`
+	IdempotencyKey string `json:"idempotency_key"`
+}
+
+// reportPayment records the tenant's claim that they paid.
+//
+// The amount is whatever they say they transferred, not the invoice total: a
+// dormitory that lets tenants pay in instalments needs part-payments to be
+// reportable. The owner verifies against their statement, and only then does it
+// count.
+func (a *API) reportPayment(w http.ResponseWriter, r *http.Request) {
+	var req reportPaymentRequest
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_request")
+		return
+	}
+
+	err := a.Store.ReportPayment(r.Context(), userIDFrom(r.Context()),
+		chi.URLParam(r, "invoiceID"), req.AmountSatang, req.Method, req.Ref, req.IdempotencyKey)
+	switch {
+	case err == nil:
+		writeJSON(w, http.StatusAccepted, map[string]string{"status": "pending_verification"})
+	case errors.Is(err, store.ErrInvalid):
+		writeError(w, http.StatusBadRequest, "invalid_request")
+	case errors.Is(err, store.ErrNotFound):
+		writeError(w, http.StatusNotFound, "invoice_not_found")
+	default:
+		a.Log.ErrorContext(r.Context(), "report payment failed",
 			"request_id", RequestIDFrom(r.Context()), "error", err)
 		writeError(w, http.StatusInternalServerError, "internal_error")
 	}
