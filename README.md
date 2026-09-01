@@ -56,7 +56,7 @@ curl localhost:8080/healthz
 | Variable | Purpose |
 | --- | --- |
 | `APP_ENV` | `development` or `production` (selects text vs JSON logs) |
-| `ADDR` | Listen address, default `:8080` |
+| `ADDR` | Listen address, default `:8080`. Leave unset on managed platforms — `PORT` is used instead |
 | `ALLOWED_ORIGINS` | Comma-separated browser origins permitted to call the API |
 | `LINE_CHANNEL_ID` | Numeric prefix of the LIFF ID; the `aud` every ID token must carry |
 | `CLOUDFLARE_ACCOUNT_ID` | Cloudflare account holding the D1 database |
@@ -128,6 +128,19 @@ go to the log.
 **Logs carry no credentials** — not the `Authorization` header, not the LINE ID
 token, not the session token. Every line carries a request ID so a report of
 "I could not pay" can be traced.
+
+## Deployment
+
+The service is a single static binary in a distroless image; any container host
+works.
+
+**DigitalOcean App Platform** builds the `Dockerfile` straight from GitHub. It
+injects `PORT`, so leave `ADDR` unset and let the service bind what the platform
+assigns. Point the health check at `/healthz`.
+
+Set every variable from the table above as an app-level environment variable,
+marking `CLOUDFLARE_API_TOKEN` and `JWT_SECRET` as secrets. The process exits at
+startup if any is missing, naming all of them at once.
 
 ## Layout
 

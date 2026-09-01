@@ -37,7 +37,7 @@ func (c Config) IsProduction() bool { return c.Env == "production" }
 func Load() (Config, error) {
 	cfg := Config{
 		Env:                 getenv("APP_ENV", "development"),
-		Addr:                getenv("ADDR", ":8080"),
+		Addr:                listenAddr(),
 		LineChannelID:       os.Getenv("LINE_CHANNEL_ID"),
 		CloudflareAccountID: os.Getenv("CLOUDFLARE_ACCOUNT_ID"),
 		D1DatabaseID:        os.Getenv("D1_DATABASE_ID"),
@@ -76,6 +76,21 @@ func Load() (Config, error) {
 	}
 
 	return cfg, nil
+}
+
+// listenAddr resolves the address to bind.
+//
+// Managed platforms (DigitalOcean App Platform, Cloud Run, Heroku) inject PORT
+// and route traffic to it; binding anywhere else fails their health check. ADDR
+// stays available for local use and takes precedence when set explicitly.
+func listenAddr() string {
+	if addr := os.Getenv("ADDR"); addr != "" {
+		return addr
+	}
+	if port := os.Getenv("PORT"); port != "" {
+		return ":" + port
+	}
+	return ":8080"
 }
 
 func getenv(key, fallback string) string {
