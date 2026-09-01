@@ -40,6 +40,9 @@ func (a *API) Routes(allowedOrigins []string) http.Handler {
 			r.Get("/me", a.me)
 			r.Get("/me/invoices", a.listInvoices)
 			r.Get("/me/invoices/{invoiceID}", a.getInvoice)
+			r.Get("/me/repairs", a.listRepairs)
+			r.Post("/me/repairs", a.createRepair)
+			r.Get("/me/repairs/{repairID}", a.getRepair)
 		})
 	})
 
@@ -222,4 +225,67 @@ func (a *API) getInvoice(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, invoice)
+}
+
+func (a *API) listRepairs(w http.ResponseWriter, r *http.Request) {
+	repairs, err := a.Store.RepairsForUser(r.Context(), userIDFrom(r.Context()))
+	if err != nil {
+		a.Log.ErrorContext(r.Context(), "list repairs failed",
+			"request_id", RequestIDFrom(r.Context()), "error", err)
+		writeError(w, http.StatusInternalServerError, "internal_error")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"repairs": repairs})
+}
+
+func (a *API) getRepair(w http.ResponseWriter, r *http.Request) {
+	repair, err := a.Store.RepairForUser(r.Context(),
+		userIDFrom(r.Context()), chi.URLParam(r, "repairID"))
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			writeError(w, http.StatusNotFound, "repair_not_found")
+			return
+		}
+		a.Log.ErrorContext(r.Context(), "get repair failed",
+			"request_id", RequestIDFrom(r.Context()), "error", err)
+		writeError(w, http.StatusInternalServerError, "internal_error")
+		return
+	}
+	writeJSON(w, http.StatusOK, repair)
+}
+
+type createRepairRequest struct {
+	Category string `json:"category"`
+	Title    string `json:"title"`
+	Detail   string `json:"detail"`
+}
+
+// createRepair files a request against the caller's own tenancy.
+//
+// The body carries what is being reported, never where: property, room and
+// tenancy are read from the database using the session's user ID.
+func (a *API) createRepair(w http.ResponseWriter, r *http.Request) {
+	var req createRepairRequest
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_request")
+		return
+	}
+
+	repair, err := a.Store.CreateRepair(r.Context(),
+		userIDFrom(r.Context()), req.Category, req.Title, req.Detail)
+	if err != nil {
+		switch {
+		case errors.Is(err, store.ErrInvalid):
+			writeError(w, http.StatusBadRequest, "invalid_request")
+		case errors.Is(err, store.ErrNotFound):
+			writeError(w, http.StatusNotFound, "tenancy_not_found")
+		default:
+			a.Log.ErrorContext(r.Context(), "create repair failed",
+				"request_id", RequestIDFrom(r.Context()), "error", err)
+			writeError(w, http.StatusInternalServerError, "internal_error")
+		}
+		return
+	}
+
+	writeJSON(w, http.StatusCreated, repair)
 }

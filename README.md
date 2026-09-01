@@ -26,9 +26,12 @@ is covered by `GET /me`; invoices are next.
 ```
 GET  /api/v1/me/invoices        -> { invoices[], outstanding_satang }
 GET  /api/v1/me/invoices/{id}   -> invoice + items[] + payments[]
+GET  /api/v1/me/repairs         -> { repairs[] }
+POST /api/v1/me/repairs         -> repair
+GET  /api/v1/me/repairs/{id}    -> repair + events[]
 ```
 
-Payments, meter readings, repairs and announcements are not implemented.
+Payments, meter readings and announcements are not implemented.
 
 ### Money
 
@@ -103,12 +106,20 @@ both verified against the live API rather than assumed:
 **Every query is an HTTPS round trip.** Avoid N+1 patterns. `GET /me` resolves
 user, tenancy, property and room in one statement for this reason.
 
-**`BEGIN`/`COMMIT`/`SAVEPOINT` are rejected.** D1 answers such a statement with
-a message pointing at the Workers `state.storage.transaction()` API. Atomicity
-instead comes from sending several statements in a single request: the batch
-commits entirely or not at all. `d1.Client.Batch` is therefore the only
-transaction primitive available, and any multi-step write that must not
-half-apply belongs in one.
+**There are no transactions for application writes.** `BEGIN`/`COMMIT`/
+`SAVEPOINT` are rejected outright, with a message pointing at the Workers
+`state.storage.transaction()` API. Several statements in one request *are*
+atomic — but the REST API refuses parameters whenever more than one statement
+is sent, and the only way around that would be building SQL by concatenation.
+
+`d1.Client.Batch` therefore rejects statements carrying parameters, which
+confines it to schema and maintenance work. **Every write carrying user input
+must be a single statement.** That constraint shapes the schema more than any
+other: balances are derived from append-only rows rather than maintained as a
+running total, and a repair's reference number is assigned by a subquery inside
+its own INSERT.
+
+All of this was established by probing the live API, not assumed.
 
 ### Migrations
 

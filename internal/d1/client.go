@@ -6,15 +6,18 @@
 //
 //   - Each call costs a network round trip. Avoid N+1 query patterns; prefer
 //     one statement that joins over several that do not.
-//   - D1 rejects BEGIN/COMMIT/SAVEPOINT. Atomicity comes from sending several
-//     statements in a single request instead: the whole batch commits or none
-//     of it does. Batch is therefore the only transaction primitive available.
+//   - D1 rejects BEGIN/COMMIT/SAVEPOINT, and the REST API refuses parameters
+//     alongside multiple statements. Several statements in one request are
+//     atomic, but only unparameterised ones — so no write carrying user input
+//     can span more than a single statement. Every such write here is expressed
+//     as one statement for that reason.
 package d1
 
 import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -115,33 +118,39 @@ type Statement struct {
 	Params []any
 }
 
-// Batch runs several statements in one request. The batch is atomic: if any
-// statement fails, none of them take effect.
+// ErrParamsInBatch reports the D1 limitation that makes Batch unsuitable for
+// writes carrying user input.
+var ErrParamsInBatch = errors.New("d1: batch statements cannot take parameters")
+
+// Batch runs several statements in one request, atomically: if any fails, none
+// take effect.
 //
-// This is the only way to get transactional behaviour out of D1 from outside
-// Workers, so any multi-step write that must not half-apply belongs here.
+// D1 refuses parameters when more than one statement is sent, so Batch accepts
+// only unparameterised SQL and rejects anything else rather than tempting a
+// caller into building SQL by concatenation. That confines it to schema and
+// maintenance work.
 //
-// Parameters are shared across the whole batch and numbered continuously, so
-// callers must offset placeholders accordingly. Where that becomes awkward,
-// prefer inlining literals that are not user input, or restructure the write
-// so it needs fewer statements.
+// Application writes therefore have no multi-statement transaction available.
+// Each one must be a single statement — which is why balances are derived from
+// append-only rows rather than maintained as a running total.
 func (c *Client) Batch(ctx context.Context, stmts []Statement) ([]Result, error) {
 	if len(stmts) == 0 {
 		return nil, nil
 	}
 
 	var sql strings.Builder
-	params := make([]any, 0, len(stmts))
 	for i, s := range stmts {
+		if len(s.Params) > 0 {
+			return nil, ErrParamsInBatch
+		}
 		if i > 0 {
 			sql.WriteString("; ")
 		}
 		sql.WriteString(strings.TrimSuffix(strings.TrimSpace(s.SQL), ";"))
-		params = append(params, s.Params...)
 	}
 	sql.WriteString(";")
 
-	return c.exec(ctx, sql.String(), params)
+	return c.exec(ctx, sql.String(), nil)
 }
 
 func (c *Client) exec(ctx context.Context, sql string, params []any) ([]Result, error) {

@@ -3,8 +3,6 @@ package store
 import (
 	"context"
 	"fmt"
-
-	"github.com/playxdev/dormapi/internal/d1"
 )
 
 // Invoice is one billing period for one tenancy.
@@ -94,38 +92,36 @@ func (s *Store) InvoiceForUser(ctx context.Context, userID, invoiceID string) (*
 		return nil, ErrNotFound
 	}
 
-	// Params are numbered continuously across a batch, so the second statement
-	// starts at ?2 even though it is the first placeholder in its own SQL.
-	results, err := s.db.Batch(ctx, []d1.Statement{
-		{
-			SQL:    `SELECT kind, description, amount_satang FROM invoice_items WHERE invoice_id = ?1 ORDER BY sort_order, rowid`,
-			Params: []any{invoiceID},
-		},
-		{
-			SQL:    `SELECT amount_satang, paid_at, method, reference FROM payments WHERE invoice_id = ?2 ORDER BY paid_at`,
-			Params: []any{invoiceID},
-		},
-	})
+	// Two separate calls rather than one batch: D1 refuses parameters when more
+	// than one statement is sent, and inlining the invoice ID to work around
+	// that would mean building SQL by concatenation.
+	items, err := s.db.Query(ctx,
+		`SELECT kind, description, amount_satang FROM invoice_items
+		 WHERE invoice_id = ?1 ORDER BY sort_order, rowid`, invoiceID)
 	if err != nil {
-		return nil, fmt.Errorf("store: get invoice lines: %w", err)
+		return nil, fmt.Errorf("store: get invoice items: %w", err)
 	}
-	if len(results) < 2 {
-		return nil, fmt.Errorf("store: expected 2 result sets, got %d", len(results))
+
+	paid, err := s.db.Query(ctx,
+		`SELECT amount_satang, paid_at, method, reference FROM payments
+		 WHERE invoice_id = ?1 ORDER BY paid_at`, invoiceID)
+	if err != nil {
+		return nil, fmt.Errorf("store: get invoice payments: %w", err)
 	}
 
 	detail := &InvoiceDetail{
 		Invoice:  scanInvoice(res.Results[0]),
-		Items:    make([]InvoiceItem, 0, len(results[0].Results)),
-		Payments: make([]Payment, 0, len(results[1].Results)),
+		Items:    make([]InvoiceItem, 0, len(items.Results)),
+		Payments: make([]Payment, 0, len(paid.Results)),
 	}
-	for _, row := range results[0].Results {
+	for _, row := range items.Results {
 		detail.Items = append(detail.Items, InvoiceItem{
 			Kind:         text(row["kind"]),
 			Description:  text(row["description"]),
 			AmountSatang: number(row["amount_satang"]),
 		})
 	}
-	for _, row := range results[1].Results {
+	for _, row := range paid.Results {
 		detail.Payments = append(detail.Payments, Payment{
 			AmountSatang: number(row["amount_satang"]),
 			PaidAt:       text(row["paid_at"]),
