@@ -175,9 +175,10 @@ All of this was established by probing the live API, not assumed.
 
 ### Migrations
 
-Run from `dormplace`, which owns them:
+Run from the `dormplace` checkout, which owns them:
 
 ```bash
+cd ../backend   # github.com/playxdev/dormplace
 wrangler d1 execute dorm-db --remote --file ./migrations/0003_identity_invites.sql
 ```
 
@@ -239,5 +240,7 @@ internal/
 ├── auth/              session token issue and verify
 ├── httpx/             router, middleware, handlers
 └── store/             every SQL statement
-migrations/
 ```
+
+There is no `migrations/` here. The schema lives in `dormplace/migrations`.
+
