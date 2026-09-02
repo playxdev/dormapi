@@ -53,7 +53,27 @@ func (a *API) Routes(allowedOrigins []string) http.Handler {
 	return r
 }
 
+// health reports whether this instance can serve, which means reaching D1.
+//
+// Answering "ok" without checking is worse than having no health check: the
+// service ran for days on a database ID that had been deleted, reporting
+// healthy the whole time, because the only D1 check was at startup.
+//
+// The query is `SELECT 1`, so this is cheap enough for a platform to poll.
 func (a *API) health(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+
+	if err := a.Store.Ping(ctx); err != nil {
+		a.Log.Error("health: database unreachable", "error", err)
+		// The error text can name the account and database; the status code
+		// and the log carry everything the caller is entitled to.
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{
+			"status": "degraded",
+			"detail": "database unreachable",
+		})
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 

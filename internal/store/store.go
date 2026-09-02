@@ -43,6 +43,12 @@ type Store struct {
 
 func New(db *d1.Client) *Store { return &Store{db: db} }
 
+// Ping checks that the database this service was configured with is actually
+// reachable. Configuration is the failure that matters: a wrong
+// D1_DATABASE_ID leaves the service running and answering, with every query
+// failing.
+func (s *Store) Ping(ctx context.Context) error { return s.db.Ping(ctx) }
+
 type User struct {
 	ID   string
 	Name string
