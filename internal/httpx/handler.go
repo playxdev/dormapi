@@ -48,6 +48,7 @@ func (a *API) Routes(allowedOrigins []string) http.Handler {
 			r.Get("/me/announcements", a.listAnnouncements)
 			r.Get("/me/announcements/{announcementID}", a.getAnnouncement)
 			r.Post("/me/announcements/{announcementID}/read", a.readAnnouncement)
+			r.Get("/me/meters", a.listMeters)
 			r.Get("/invites/{code}", a.getInvite)
 			r.Post("/invites/{code}/claim", a.claimInvite)
 		})
@@ -284,6 +285,19 @@ func (a *API) getRepair(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, ticket)
+}
+
+// listMeters returns the water and electricity readings taken during the
+// caller's own tenancy.
+func (a *API) listMeters(w http.ResponseWriter, r *http.Request) {
+	meters, err := a.Store.MetersForUser(r.Context(), userIDFrom(r.Context()))
+	if err != nil {
+		a.Log.ErrorContext(r.Context(), "list meters failed",
+			"request_id", RequestIDFrom(r.Context()), "error", err)
+		writeError(w, http.StatusInternalServerError, "internal_error")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"meters": meters})
 }
 
 // listAnnouncements returns the notice board of every building the caller

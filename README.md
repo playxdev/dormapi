@@ -30,8 +30,8 @@ GET  /api/v1/me                 -> { user_id, tenant_id, property_id,
 GET  /healthz                   -> { status }
 ```
 
-**Phase 2 — tenant features.** In progress, following §10's order. `My Room`
-is covered by `GET /me`; invoices are next.
+**Phase 2 — tenant features.** Complete as of 1.0.0. `My Room` is covered by
+`GET /me`; everything else has its own endpoint.
 
 ```
 GET  /api/v1/me/invoices        -> { invoices[], outstanding_satang }
@@ -41,6 +41,7 @@ POST /api/v1/me/repairs         -> ticket
 GET  /api/v1/me/repairs/{id}    -> ticket
 GET  /api/v1/me/invoices/{id}/payment   -> PromptPay payloads
 POST /api/v1/me/invoices/{id}/payments  -> report a payment
+GET  /api/v1/me/meters          -> { meters[] }
 GET  /api/v1/me/announcements   -> { announcements[], unread_count }
 GET  /api/v1/me/announcements/{id}      -> announcement
 POST /api/v1/me/announcements/{id}/read -> marks it opened
@@ -48,12 +49,22 @@ GET  /api/v1/invites/{code}     -> terms to review before confirming
 POST /api/v1/invites/{code}/claim -> binds the caller to the contract's room
 ```
 
-Meter readings are not implemented.
 
 `/me/repairs` is the tenant's name for what the schema calls a ticket. The wire
 contract also keeps `property_id` and `room_id`, which the schema calls
 buildings and room numbers — the MINI App and the design document both speak of
 properties and rooms, and renaming a deployed contract would buy nothing.
+
+### Meter readings
+
+A reading belongs to a room, and a room outlives a tenancy, so each reading is
+bounded by the caller's own contract dates. The join alone would hand a tenant
+who moved in last month the previous occupant's consumption.
+
+Skipped rooms are left out: a walk that passed a door without reading it has no
+number to show, and rendering it as zero usage would be a lie. Photos are not
+exposed — they are the owner's audit trail, and what a tenant needs to check a
+bill is the two numbers and the difference.
 
 ### Announcements
 
