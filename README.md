@@ -199,8 +199,14 @@ Run from the `dormplace` checkout, which owns them:
 
 ```bash
 cd ../backoffice   # github.com/playxdev/dormplace
-wrangler d1 execute dorm-db --remote --file ./migrations/0003_identity_invites.sql
+npm run db:init:remote     # wrangler d1 migrations apply dorm-db --remote
 ```
+
+Use `migrations apply`, never `d1 execute --file` on a migration. Executing the
+file applies the SQL but writes no row to `d1_migrations`, so the next
+`migrations apply` replays history from 0001 and dies on
+`table users already exists`. That is exactly what happened to `dorm-db`, and
+repairing it meant inserting the already-applied names into the ledger by hand.
 
 Money is stored as an integer number of satang throughout both services.
 Storing currency as a float silently corrupts balances, and this system tracks
