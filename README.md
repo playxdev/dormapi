@@ -198,7 +198,7 @@ All of this was established by probing the live API, not assumed.
 Run from the `dormplace` checkout, which owns them:
 
 ```bash
-cd ../backend   # github.com/playxdev/dormplace
+cd ../backoffice   # github.com/playxdev/dormplace
 wrangler d1 execute dorm-db --remote --file ./migrations/0003_identity_invites.sql
 ```
 
