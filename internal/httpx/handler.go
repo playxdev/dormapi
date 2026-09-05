@@ -45,6 +45,9 @@ func (a *API) Routes(allowedOrigins []string) http.Handler {
 			r.Get("/me/repairs", a.listRepairs)
 			r.Post("/me/repairs", a.createRepair)
 			r.Get("/me/repairs/{repairID}", a.getRepair)
+			r.Get("/me/announcements", a.listAnnouncements)
+			r.Get("/me/announcements/{announcementID}", a.getAnnouncement)
+			r.Post("/me/announcements/{announcementID}/read", a.readAnnouncement)
 			r.Get("/invites/{code}", a.getInvite)
 			r.Post("/invites/{code}/claim", a.claimInvite)
 		})
@@ -281,6 +284,69 @@ func (a *API) getRepair(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, ticket)
+}
+
+// listAnnouncements returns the notice board of every building the caller
+// rents in, pinned notices first.
+//
+// unread_count is computed here rather than asked of the database: the list is
+// a handful of rows and already in hand, and a second D1 round trip to count
+// them would cost more than the loop.
+func (a *API) listAnnouncements(w http.ResponseWriter, r *http.Request) {
+	announcements, err := a.Store.AnnouncementsForUser(r.Context(), userIDFrom(r.Context()))
+	if err != nil {
+		a.Log.ErrorContext(r.Context(), "list announcements failed",
+			"request_id", RequestIDFrom(r.Context()), "error", err)
+		writeError(w, http.StatusInternalServerError, "internal_error")
+		return
+	}
+
+	unread := 0
+	for _, n := range announcements {
+		if !n.Read {
+			unread++
+		}
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"announcements": announcements,
+		"unread_count":  unread,
+	})
+}
+
+func (a *API) getAnnouncement(w http.ResponseWriter, r *http.Request) {
+	announcement, err := a.Store.AnnouncementForUser(r.Context(),
+		userIDFrom(r.Context()), chi.URLParam(r, "announcementID"))
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			writeError(w, http.StatusNotFound, "announcement_not_found")
+			return
+		}
+		a.Log.ErrorContext(r.Context(), "get announcement failed",
+			"request_id", RequestIDFrom(r.Context()), "error", err)
+		writeError(w, http.StatusInternalServerError, "internal_error")
+		return
+	}
+	writeJSON(w, http.StatusOK, announcement)
+}
+
+// readAnnouncement marks one notice as opened by the caller.
+//
+// Repeating it is deliberately not an error: the app marks on every view, and
+// only the first one writes a row.
+func (a *API) readAnnouncement(w http.ResponseWriter, r *http.Request) {
+	err := a.Store.MarkAnnouncementRead(r.Context(),
+		userIDFrom(r.Context()), chi.URLParam(r, "announcementID"))
+	switch {
+	case err == nil:
+		writeJSON(w, http.StatusOK, map[string]string{"status": "read"})
+	case errors.Is(err, store.ErrNotFound):
+		writeError(w, http.StatusNotFound, "announcement_not_found")
+	default:
+		a.Log.ErrorContext(r.Context(), "mark announcement read failed",
+			"request_id", RequestIDFrom(r.Context()), "error", err)
+		writeError(w, http.StatusInternalServerError, "internal_error")
+	}
 }
 
 type createRepairRequest struct {

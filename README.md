@@ -41,16 +41,36 @@ POST /api/v1/me/repairs         -> ticket
 GET  /api/v1/me/repairs/{id}    -> ticket
 GET  /api/v1/me/invoices/{id}/payment   -> PromptPay payloads
 POST /api/v1/me/invoices/{id}/payments  -> report a payment
+GET  /api/v1/me/announcements   -> { announcements[], unread_count }
+GET  /api/v1/me/announcements/{id}      -> announcement
+POST /api/v1/me/announcements/{id}/read -> marks it opened
 GET  /api/v1/invites/{code}     -> terms to review before confirming
 POST /api/v1/invites/{code}/claim -> binds the caller to the contract's room
 ```
 
-Payments, meter readings and announcements are not implemented.
+Meter readings are not implemented.
 
 `/me/repairs` is the tenant's name for what the schema calls a ticket. The wire
 contract also keeps `property_id` and `room_id`, which the schema calls
 buildings and room numbers — the MINI App and the design document both speak of
 properties and rooms, and renaming a deployed contract would buy nothing.
+
+### Announcements
+
+An announcement is addressed to a **building**, never to a room or a person:
+this is the notice board by the lift, not a letter. The list is derived from the
+caller's own active contracts, so a tenant renting in two buildings sees both
+boards and one row per notice, and a tenant with no contract sees nothing.
+
+Drafts and expired notices are excluded in SQL rather than in Go. What a tenant
+may read is a property of the query, so a caller that forgets a condition gets
+no rows instead of somebody's unpublished draft.
+
+Read state is the **absence** of a row in `announcement_reads`. Publishing to a
+building of 100 rooms costs zero writes, and one write lands per tenant who
+actually opens a notice — which is what keeps this inside D1's write budget.
+Marking is idempotent: the MINI App marks on every view, and only the first one
+writes.
 
 ### Paying
 
