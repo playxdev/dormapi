@@ -17,6 +17,28 @@ type Config struct {
 	// AllowedOrigins are the browser origins permitted to call this API.
 	AllowedOrigins []string
 
+	// APIBaseURL is this service's own public address. It appears in the
+	// verification link a tenant opens from their inbox, which this service
+	// answers itself.
+	APIBaseURL string
+
+	// AppLIFFURL is the permanent LINE link that opens the tenant app. A
+	// recovery link points there, not here: rebinding needs a LINE ID token
+	// and only the app can produce one.
+	AppLIFFURL string
+
+	// MailFrom is the address transactional mail is sent from. Its domain must
+	// be onboarded to Cloudflare Email Sending first. Empty disables sending:
+	// the service logs what it would have sent and keeps running, which is the
+	// right behaviour in development and a loud failure in production.
+	MailFrom     string
+	MailFromName string
+
+	// MailAPIToken authorises sending. Defaults to CLOUDFLARE_API_TOKEN, since
+	// both reach the same account, but a separately scoped token is better: a
+	// mail token that leaks cannot also read the database.
+	MailAPIToken string
+
 	// BackofficeURL is where the owner-facing service is served. The tenant
 	// never signs in there; the API only needs it to hand out the address of
 	// the lease a tenant is about to confirm, which that service renders.
@@ -49,6 +71,11 @@ func Load() (Config, error) {
 		CloudflareAPIToken:  os.Getenv("CLOUDFLARE_API_TOKEN"),
 		JWTSecret:           []byte(os.Getenv("JWT_SECRET")),
 		BackofficeURL:       strings.TrimRight(os.Getenv("BACKOFFICE_URL"), "/"),
+		APIBaseURL:          strings.TrimRight(os.Getenv("API_BASE_URL"), "/"),
+		AppLIFFURL:          strings.TrimRight(os.Getenv("APP_LIFF_URL"), "/"),
+		MailFrom:            os.Getenv("MAIL_FROM"),
+		MailFromName:        getenv("MAIL_FROM_NAME", "dorm.place"),
+		MailAPIToken:        getenv("MAIL_API_TOKEN", os.Getenv("CLOUDFLARE_API_TOKEN")),
 	}
 
 	origins := getenv("ALLOWED_ORIGINS", "")

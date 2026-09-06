@@ -12,6 +12,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/playxdev/dormapi/internal/auth"
 	"github.com/playxdev/dormapi/internal/line"
+	"github.com/playxdev/dormapi/internal/mail"
 	"github.com/playxdev/dormapi/internal/store"
 	"github.com/playxdev/dormapi/internal/terms"
 )
@@ -20,7 +21,17 @@ type API struct {
 	Store    *store.Store
 	Verifier *line.Verifier
 	Issuer   *auth.Issuer
+	Mail     mail.Sender
 	Log      *slog.Logger
+
+	// APIBaseURL is this service's own public address, used to build the
+	// verification link a tenant opens from their inbox.
+	APIBaseURL string
+
+	// AppLIFFURL is the permanent link that opens the tenant app inside LINE.
+	// A recovery link points here rather than at this service, because the
+	// rebind needs a LINE ID token that only the app can produce.
+	AppLIFFURL string
 }
 
 func (a *API) Routes(allowedOrigins []string) http.Handler {
@@ -34,11 +45,20 @@ func (a *API) Routes(allowedOrigins []string) http.Handler {
 	r.Get("/healthz", a.health)
 
 	r.Route("/api/v1", func(r chi.Router) {
-		r.Post("/auth/line", a.authLine)
+		r.With(RateLimit(30, 15*time.Minute)).Post("/auth/line", a.authLine)
+
+		// Recovery is reachable without a session by definition: the caller
+		// has lost the only credential that would prove who they are. That
+		// makes these the endpoints worth guessing at, so they are the ones
+		// with a ceiling.
+		r.Get("/email/verify", a.verifyEmail)
+		r.With(RateLimit(3, 15*time.Minute)).Post("/recovery/request", a.requestRecovery)
+		r.With(RateLimit(10, 15*time.Minute)).Post("/recovery/rebind", a.rebindRecovery)
 
 		r.Group(func(r chi.Router) {
 			r.Use(a.requireSession)
 			r.Get("/me", a.me)
+			r.With(RateLimit(5, 15*time.Minute)).Post("/me/email", a.setEmail)
 			r.Get("/me/invoices", a.listInvoices)
 			r.Get("/me/invoices/{invoiceID}", a.getInvoice)
 			r.Get("/me/invoices/{invoiceID}/payment", a.getPaymentInfo)
@@ -50,7 +70,7 @@ func (a *API) Routes(allowedOrigins []string) http.Handler {
 			r.Get("/me/announcements/{announcementID}", a.getAnnouncement)
 			r.Post("/me/announcements/{announcementID}/read", a.readAnnouncement)
 			r.Get("/me/meters", a.listMeters)
-			r.Get("/invites/{code}", a.getInvite)
+			r.With(RateLimit(20, 15*time.Minute)).Get("/invites/{code}", a.getInvite)
 			r.Post("/invites/{code}/claim", a.claimInvite)
 		})
 	})
