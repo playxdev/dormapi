@@ -13,6 +13,7 @@ import (
 	"github.com/playxdev/dormapi/internal/auth"
 	"github.com/playxdev/dormapi/internal/line"
 	"github.com/playxdev/dormapi/internal/store"
+	"github.com/playxdev/dormapi/internal/terms"
 )
 
 type API struct {
@@ -424,11 +425,13 @@ func (a *API) getInvite(w http.ResponseWriter, r *http.Request) {
 //
 // The claim carries no terms of its own. What the tenant agreed to is copied
 // from the contract server-side, so the confirmation cannot be replayed with
-// different numbers than the ones that were shown.
+// different numbers than the ones that were shown, and the document versions
+// come from this build rather than from the request.
 func (a *API) claimInvite(w http.ResponseWriter, r *http.Request) {
 	code := strings.ToUpper(strings.TrimSpace(chi.URLParam(r, "code")))
 
-	err := a.Store.ClaimInvite(r.Context(), userIDFrom(r.Context()), code)
+	err := a.Store.ClaimInvite(r.Context(), userIDFrom(r.Context()), code,
+		terms.LeaseVersion, terms.PDPAVersion)
 	switch {
 	case err == nil:
 		writeJSON(w, http.StatusCreated, map[string]string{"status": "claimed"})

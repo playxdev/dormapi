@@ -129,6 +129,11 @@ func (s *Store) userByIdentity(ctx context.Context, subject string) (*User, erro
 // A person can hold more than one active contract — a second room, or a room in
 // another building. Until the app offers a switcher this returns the most
 // recently started one, ordered explicitly so the answer is stable.
+//
+// The account reaches its tenant record through the contract it confirmed,
+// rather than through a stored tenants.user_id. The two said the same thing,
+// and keeping both meant the claim had to write twice with no way to make the
+// pair atomic.
 func (s *Store) ContextForUser(ctx context.Context, userID string) (*Context, error) {
 	res, err := s.db.Query(ctx, `
 		SELECT u.id, u.name,
@@ -137,8 +142,8 @@ func (s *Store) ContextForUser(ctx context.Context, userID string) (*Context, er
 		       b.id AS building_id, b.name AS building_name,
 		       r.number AS room_number
 		FROM users u
-		JOIN tenants t   ON t.user_id = u.id
-		JOIN contracts c ON c.tenant_id = t.id AND c.status = 'active'
+		JOIN contracts c ON c.confirmed_by_user_id = u.id AND c.status = 'active'
+		JOIN tenants t   ON t.id = c.tenant_id
 		JOIN rooms r     ON r.id = c.room_id
 		JOIN buildings b ON b.id = r.building_id
 		WHERE u.id = ?1

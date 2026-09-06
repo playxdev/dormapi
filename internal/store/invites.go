@@ -92,26 +92,26 @@ func (s *Store) InviteByCode(ctx context.Context, userID, code string) (*InviteP
 // ClaimInvite attaches the caller's account to the contract's tenant record and
 // stores the terms they confirmed.
 //
-// One statement, because D1 permits no parameterised multi-statement write.
-// Single use falls out of the guard: the update only matches while
-// confirmed_by_user_id is still NULL, so a second claim changes no rows.
+// One statement — the only shape D1 allows for a parameterised write, and now
+// the only shape this needs. Single use falls out of the guard: the update
+// matches only while confirmed_by_user_id is still NULL, so a second claim
+// changes no rows.
 //
 // The agreed_* columns copy the contract's values at this moment rather than
 // referencing them. If the owner later amends the rent, the tenant's record of
-// what they agreed to must not move with it.
-//
-// Note this leaves tenants.user_id to a second call. The two cannot be one
-// statement, so a failure between them leaves the contract confirmed but the
-// tenant record unlinked — recoverable by retrying the claim, which is why
-// LinkTenantAccount is idempotent.
-func (s *Store) ClaimInvite(ctx context.Context, userID, code string) error {
+// what they agreed to must not move with it. agreed_terms_version and
+// agreed_pdpa_version name the documents the tenant was shown, so a
+// confirmation stays answerable after the template changes.
+func (s *Store) ClaimInvite(ctx context.Context, userID, code string, termsVersion, pdpaVersion string) error {
 	res, err := s.db.Query(ctx, `
 		UPDATE contracts SET
 			confirmed_by_user_id = ?1,
 			confirmed_at         = datetime('now'),
 			agreed_rent          = rent,
 			agreed_deposit       = deposit,
-			agreed_start_date    = start_date
+			agreed_start_date    = start_date,
+			agreed_terms_version = ?3,
+			agreed_pdpa_version  = ?4
 		WHERE confirmed_by_user_id IS NULL
 		  AND status = 'active'
 		  AND id = (
@@ -119,7 +119,7 @@ func (s *Store) ClaimInvite(ctx context.Context, userID, code string) error {
 			WHERE i.code = ?2
 			  AND i.revoked_at IS NULL
 			  AND i.expires_at > datetime('now')
-		  )`, userID, code)
+		  )`, userID, code, termsVersion, pdpaVersion)
 	if err != nil {
 		return fmt.Errorf("store: claim invite: %w", err)
 	}
@@ -133,22 +133,5 @@ func (s *Store) ClaimInvite(ctx context.Context, userID, code string) error {
 		return ErrNotFound
 	}
 
-	return s.linkTenantAccount(ctx, userID, code)
-}
-
-// linkTenantAccount points the tenant record at the account that confirmed it.
-// Idempotent, so a retry after a partial claim completes the link.
-func (s *Store) linkTenantAccount(ctx context.Context, userID, code string) error {
-	_, err := s.db.Query(ctx, `
-		UPDATE tenants SET user_id = ?1
-		WHERE user_id IS NULL
-		  AND id = (
-			SELECT c.tenant_id FROM invites i
-			JOIN contracts c ON c.id = i.contract_id
-			WHERE i.code = ?2
-		  )`, userID, code)
-	if err != nil {
-		return fmt.Errorf("store: link tenant account: %w", err)
-	}
 	return nil
 }
