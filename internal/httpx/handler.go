@@ -167,6 +167,10 @@ type meResponse struct {
 	PropertyName string `json:"property_name"`
 	RoomID       string `json:"room_id"`
 	DisplayName  string `json:"display_name"`
+	Email        string `json:"email,omitempty"`
+	// Absent rather than false when there is no address at all, so the app
+	// can tell "never asked" from "asked and not confirmed".
+	EmailVerified bool `json:"email_verified"`
 }
 
 // me returns the caller's authorised context.
@@ -195,13 +199,15 @@ func (a *API) me(w http.ResponseWriter, r *http.Request) {
 	// document both speak of properties and rooms, and renaming the contract
 	// would break a deployed client for no gain.
 	writeJSON(w, http.StatusOK, meResponse{
-		UserID:       c.User.ID,
-		TenantID:     c.TenantID,
-		ContractID:   c.ContractID,
-		PropertyID:   c.BuildingID,
-		PropertyName: c.BuildingName,
-		RoomID:       c.RoomNumber,
-		DisplayName:  c.User.Name,
+		UserID:        c.User.ID,
+		TenantID:      c.TenantID,
+		ContractID:    c.ContractID,
+		PropertyID:    c.BuildingID,
+		PropertyName:  c.BuildingName,
+		RoomID:        c.RoomNumber,
+		DisplayName:   c.User.Name,
+		Email:         c.User.Email,
+		EmailVerified: c.User.Verified,
 	})
 }
 

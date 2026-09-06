@@ -59,6 +59,11 @@ func (s *Store) Ping(ctx context.Context) error { return s.db.Ping(ctx) }
 type User struct {
 	ID   string
 	Name string
+	// Email is what makes recovery possible and nothing else does, so the
+	// app has to know both whether one is on file and whether it has been
+	// proven — an unverified address recovers nothing.
+	Email    string
+	Verified bool
 }
 
 // Context is a user together with the contract that grants them access.
@@ -143,7 +148,7 @@ func (s *Store) userByIdentity(ctx context.Context, subject string) (*User, erro
 // pair atomic.
 func (s *Store) ContextForUser(ctx context.Context, userID string) (*Context, error) {
 	res, err := s.db.Query(ctx, `
-		SELECT u.id, u.name,
+		SELECT u.id, u.name, u.email, u.email_verified_at,
 		       t.id AS tenant_id,
 		       c.id AS contract_id,
 		       b.id AS building_id, b.name AS building_name,
@@ -165,7 +170,12 @@ func (s *Store) ContextForUser(ctx context.Context, userID string) (*Context, er
 
 	row := res.Results[0]
 	return &Context{
-		User:         User{ID: text(row["id"]), Name: text(row["name"])},
+		User: User{
+			ID:       text(row["id"]),
+			Name:     text(row["name"]),
+			Email:    text(row["email"]),
+			Verified: text(row["email_verified_at"]) != "",
+		},
 		TenantID:     text(row["tenant_id"]),
 		ContractID:   text(row["contract_id"]),
 		BuildingID:   text(row["building_id"]),
