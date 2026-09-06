@@ -17,9 +17,18 @@ import (
 	"github.com/playxdev/dormapi/internal/terms"
 )
 
+// IdentityVerifier confirms that an ID token really names a LINE user.
+//
+// An interface rather than *line.Verifier so that the endpoints resting on it
+// - login, and the rebind that hands over an account - can be tested without
+// asking LINE to mint a token first.
+type IdentityVerifier interface {
+	Verify(ctx context.Context, idToken string) (*line.Identity, error)
+}
+
 type API struct {
 	Store    *store.Store
-	Verifier *line.Verifier
+	Verifier IdentityVerifier
 	Issuer   *auth.Issuer
 	Mail     mail.Sender
 	Log      *slog.Logger

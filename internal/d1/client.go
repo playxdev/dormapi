@@ -32,6 +32,7 @@ type Client struct {
 	accountID  string
 	databaseID string
 	token      string
+	baseURL    string
 	http       *http.Client
 }
 
@@ -42,6 +43,13 @@ type Config struct {
 	DatabaseID string
 	APIToken   string
 	Timeout    time.Duration
+
+	// BaseURL replaces Cloudflare's API root. Empty everywhere but in tests,
+	// which point it at a server speaking D1's wire format — the SQL text, the
+	// parameter list and the shape of the answer are what the store's
+	// behaviour actually rests on, and a fake that does not carry them tests
+	// nothing.
+	BaseURL string
 }
 
 func New(cfg Config) *Client {
@@ -49,10 +57,15 @@ func New(cfg Config) *Client {
 	if timeout == 0 {
 		timeout = 15 * time.Second
 	}
+	base := cfg.BaseURL
+	if base == "" {
+		base = apiBase
+	}
 	return &Client{
 		accountID:  cfg.AccountID,
 		databaseID: cfg.DatabaseID,
 		token:      cfg.APIToken,
+		baseURL:    strings.TrimSuffix(base, "/"),
 		http:       &http.Client{Timeout: timeout},
 	}
 }
@@ -162,7 +175,7 @@ func (c *Client) exec(ctx context.Context, sql string, params []any) ([]Result, 
 		return nil, fmt.Errorf("d1: encode request: %w", err)
 	}
 
-	url := fmt.Sprintf("%s/accounts/%s/d1/database/%s/query", apiBase, c.accountID, c.databaseID)
+	url := fmt.Sprintf("%s/accounts/%s/d1/database/%s/query", c.baseURL, c.accountID, c.databaseID)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
 		return nil, fmt.Errorf("d1: build request: %w", err)

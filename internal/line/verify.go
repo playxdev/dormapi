@@ -37,12 +37,17 @@ type Verifier struct {
 	// channelID is the expected `aud`. A token minted for another channel must
 	// not be accepted here.
 	channelID string
-	http      *http.Client
+	// endpoint is LINE's verification URL. Only a test ever changes it, and
+	// only to a server answering in LINE's own shape - the audience check
+	// below is the whole point of this type and cannot be tested without one.
+	endpoint string
+	http     *http.Client
 }
 
 func NewVerifier(channelID string) *Verifier {
 	return &Verifier{
 		channelID: channelID,
+		endpoint:  verifyURL,
 		http:      &http.Client{Timeout: 10 * time.Second},
 	}
 }
@@ -69,7 +74,7 @@ func (v *Verifier) Verify(ctx context.Context, idToken string) (*Identity, error
 	form.Set("id_token", idToken)
 	form.Set("client_id", v.channelID)
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, verifyURL, strings.NewReader(form.Encode()))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, v.endpoint, strings.NewReader(form.Encode()))
 	if err != nil {
 		return nil, fmt.Errorf("line: build request: %w", err)
 	}
