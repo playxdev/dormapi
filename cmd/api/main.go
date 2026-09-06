@@ -50,7 +50,7 @@ func run() error {
 	}
 
 	api := &httpx.API{
-		Store:    store.New(db),
+		Store:    store.New(db, cfg.BackofficeURL),
 		Verifier: line.NewVerifier(cfg.LineChannelID),
 		Issuer:   auth.NewIssuer(cfg.JWTSecret, 12*time.Hour),
 		Log:      log,

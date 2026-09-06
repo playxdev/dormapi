@@ -17,6 +17,11 @@ type Config struct {
 	// AllowedOrigins are the browser origins permitted to call this API.
 	AllowedOrigins []string
 
+	// BackofficeURL is where the owner-facing service is served. The tenant
+	// never signs in there; the API only needs it to hand out the address of
+	// the lease a tenant is about to confirm, which that service renders.
+	BackofficeURL string
+
 	// LineChannelID is the numeric prefix of the LIFF ID for the environment
 	// being served. It is the `aud` claim every accepted ID token must carry.
 	LineChannelID string
@@ -43,6 +48,7 @@ func Load() (Config, error) {
 		D1DatabaseID:        os.Getenv("D1_DATABASE_ID"),
 		CloudflareAPIToken:  os.Getenv("CLOUDFLARE_API_TOKEN"),
 		JWTSecret:           []byte(os.Getenv("JWT_SECRET")),
+		BackofficeURL:       strings.TrimRight(os.Getenv("BACKOFFICE_URL"), "/"),
 	}
 
 	origins := getenv("ALLOWED_ORIGINS", "")

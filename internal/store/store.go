@@ -39,9 +39,16 @@ var lineNamespace = uuid.MustParse("6f9619ff-8b86-d011-b42d-00c04fc964ff")
 
 type Store struct {
 	db *d1.Client
+
+	// backofficeURL is where the lease a tenant is about to confirm is
+	// rendered. Empty in a deployment without one, in which case the preview
+	// simply carries no link rather than an address that answers nothing.
+	backofficeURL string
 }
 
-func New(db *d1.Client) *Store { return &Store{db: db} }
+func New(db *d1.Client, backofficeURL string) *Store {
+	return &Store{db: db, backofficeURL: backofficeURL}
+}
 
 // Ping checks that the database this service was configured with is actually
 // reachable. Configuration is the failure that matters: a wrong

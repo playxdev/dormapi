@@ -4,7 +4,10 @@ import (
 	"context"
 	"crypto/rand"
 	"fmt"
+	"net/url"
 	"strings"
+
+	"github.com/playxdev/dormapi/internal/terms"
 )
 
 // inviteAlphabet omits characters that are read wrong when a code is spoken
@@ -36,8 +39,16 @@ func NewInviteCode() (string, error) {
 
 // InvitePreview is what the tenant reviews before confirming. It is the exact
 // set of terms the confirmation is taken to cover.
+//
+// LeaseURL points at the backoffice's rendering of this contract's lease — the
+// same wording the owner prints. The money terms are repeated here because the
+// app leads with them; the clauses are not, because a second copy of a lease is
+// a second lease.
 type InvitePreview struct {
 	Code           string `json:"code"`
+	LeaseURL       string `json:"lease_url,omitempty"`
+	TermsVersion   string `json:"terms_version"`
+	PDPAVersion    string `json:"pdpa_version"`
 	BuildingName   string `json:"building_name"`
 	RoomNumber     string `json:"room_number"`
 	TenantName     string `json:"tenant_name"`
@@ -78,6 +89,9 @@ func (s *Store) InviteByCode(ctx context.Context, userID, code string) (*InviteP
 	claimedBy := text(row["confirmed_by_user_id"])
 	return &InvitePreview{
 		Code:           text(row["code"]),
+		LeaseURL:       s.leaseURL(text(row["code"])),
+		TermsVersion:   terms.LeaseVersion,
+		PDPAVersion:    terms.PDPAVersion,
 		BuildingName:   text(row["building_name"]),
 		RoomNumber:     text(row["room_number"]),
 		TenantName:     text(row["tenant_name"]),
@@ -134,4 +148,15 @@ func (s *Store) ClaimInvite(ctx context.Context, userID, code string, termsVersi
 	}
 
 	return nil
+}
+
+// leaseURL addresses the backoffice's rendering of this invite's lease.
+//
+// The code is the whole authorisation: that page shows no more than the person
+// holding the code can already do with it, and masks the ID number besides.
+func (s *Store) leaseURL(code string) string {
+	if s.backofficeURL == "" || code == "" {
+		return ""
+	}
+	return s.backofficeURL + "/lease/" + url.PathEscape(code)
 }
