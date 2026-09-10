@@ -383,3 +383,39 @@ func TestTimestampsMatchTheFormatTheBackofficeWrites(t *testing.T) {
 		t.Errorf("%q sorts after %q", earlier, later)
 	}
 }
+
+// The operator's day, not UTC's, and not the host's.
+//
+// Between midnight and 07:00 in Bangkok the UTC date is still yesterday. An
+// invoice due today would read as not yet due for another seven hours, and the
+// backoffice — computing the same thing from the same rule — would disagree
+// with the resident's app for exactly that window.
+func TestTodayIsTheOperatorsDay(t *testing.T) {
+	if bangkok.String() != "Asia/Bangkok" {
+		t.Errorf("zone = %q, want Asia/Bangkok from the embedded tzdata", bangkok)
+	}
+
+	// The one moment that separates the two answers: 23:00 UTC is already
+	// tomorrow in Bangkok.
+	at := time.Date(2026, 9, 10, 23, 0, 0, 0, time.UTC)
+	if got := at.In(bangkok).Format("2006-01-02"); got != "2026-09-11" {
+		t.Errorf("date = %q, want the Bangkok day", got)
+	}
+	if got := at.UTC().Format("2006-01-02"); got == "2026-09-11" {
+		t.Fatal("the test moment does not actually straddle midnight")
+	}
+
+	// Thailand has been UTC+7 with no daylight saving since 1941, so the
+	// offset is the same in every month.
+	for _, month := range []time.Month{time.January, time.July} {
+		_, offset := time.Date(2026, month, 15, 12, 0, 0, 0, time.UTC).In(bangkok).Zone()
+		if offset != 7*60*60 {
+			t.Errorf("%s offset = %d, want +7h", month, offset)
+		}
+	}
+
+	// And the running answer is that day, whatever the host is set to.
+	if got, want := today(), time.Now().In(bangkok).Format("2006-01-02"); got != want {
+		t.Errorf("today() = %q, want %q", got, want)
+	}
+}

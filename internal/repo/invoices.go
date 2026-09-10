@@ -4,6 +4,15 @@ import (
 	"context"
 	"fmt"
 	"time"
+
+	// The zone database, compiled into the binary.
+	//
+	// The runtime image is distroless/static, which carries no tzdata, so
+	// without this `LoadLocation("Asia/Bangkok")` fails in production and
+	// silently falls back — leaving the fallback load-bearing and the path
+	// that is tested never the path that runs. Roughly 450KB, once, for a
+	// binary that decides whether a bill is overdue.
+	_ "time/tzdata"
 )
 
 // Invoice is one billing period for one lease. Amounts are integer satang.
@@ -200,9 +209,15 @@ func scanInvoice(row map[string]any, today string) Invoice {
 // today is the operator's day, not UTC's.
 //
 // Every stored timestamp is UTC, but "is this invoice overdue" is a question
-// about the calendar the resident and the operator live in. At 04:00 Bangkok
-// the UTC date is still yesterday, and an invoice would read as due for
-// another seven hours.
+// about the calendar the resident and the operator live in. Between midnight
+// and 07:00 in Bangkok the UTC date is still yesterday, so an invoice due
+// today would read as not yet due for another seven hours — and the
+// backoffice, computing the same thing, would have to agree or the operator
+// and the resident would read different words for one row.
+//
+// The zone is the platform's, not the tenant's. `tenant.timezone` exists and
+// defaults to Asia/Bangkok; this vertical serves Thailand only, and the day a
+// tenant outside it is onboarded this reads that column instead.
 func today() string {
 	return time.Now().In(bangkok).Format("2006-01-02")
 }
@@ -212,9 +227,10 @@ var bangkok = mustLoad("Asia/Bangkok")
 func mustLoad(name string) *time.Location {
 	loc, err := time.LoadLocation(name)
 	if err != nil {
-		// A container without tzdata. UTC is seven hours behind, which moves
-		// the boundary rather than breaking it, and is better than refusing to
-		// serve.
+		// Unreachable for a real zone name now that tzdata is embedded, and
+		// kept for the one that is not. Thailand has been UTC+7 with no
+		// daylight saving since 1941, so this is the right answer rather than
+		// a degraded one.
 		return time.FixedZone("ICT", 7*60*60)
 	}
 	return loc
