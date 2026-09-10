@@ -48,6 +48,16 @@ offers a switcher.
 
 ## Status
 
+**2.0.0** — on the XYZ multi-tenant standard. See `../DORMPLACE.md` for what
+that changed across all three services and why it is a major version; the two
+breaking changes on this wire are `resident_id` and `resident_name`, both
+described above.
+
+The Go module path stays `github.com/playxdev/dormapi` rather than gaining a
+`/v2`. That suffix is Go's rule for a library other modules import, and nothing
+imports this one — it is an application with a single `cmd/api`. The tag is
+`v2.0.0` so the three services carry one version between them.
+
 **Milestone 1 — authentication.** A LINE user can sign in through the MINI App
 and be resolved to a property and room.
 
@@ -79,6 +89,9 @@ GET  /api/v1/invites/{code}     -> terms to review before confirming
 POST /api/v1/invites/{code}/claim -> binds the caller to the contract's room
 ```
 
+
+**M10 — the Official Account.** `POST /webhooks/line`, described under *The
+Official Account* below.
 
 `/me/repairs` is the tenant's name for what the schema calls a ticket. The wire
 contract also keeps `property_id` and `room_id`, which the schema calls
