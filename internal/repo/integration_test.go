@@ -603,3 +603,104 @@ func mustParse(t *testing.T, value string) time.Time {
 	}
 	return at
 }
+
+// Inbound routing against the real schema: the idempotency table, the
+// membership lookup a userId resolves through, and the conversation context's
+// upsert.
+func TestLiveInboundRoutesWithoutTrustingThePayload(t *testing.T) {
+	l := newLive(t)
+	l.claim()
+	ctx := context.Background()
+
+	// Give the account the LINE identity a webhook would arrive with.
+	if _, err := l.repo.AccountByLine(ctx, "U_resident", "ผู้เช่า ทดสอบ"); err != nil {
+		t.Fatalf("AccountByLine: %v", err)
+	}
+	lineAccount, _ := l.repo.AccountByLine(ctx, "U_resident", "")
+	// The claim above bound the party to a different account, so move the
+	// membership onto the one the webhook will resolve to.
+	l.fake.Exec(`UPDATE membership SET account_id = ? WHERE tenant_id = ?`, lineAccount.ID, l.tenantID)
+
+	accountID, operators, err := l.repo.Inbound(ctx, "U_resident")
+	if err != nil {
+		t.Fatalf("Inbound: %v", err)
+	}
+	if accountID != lineAccount.ID {
+		t.Errorf("account = %q", accountID)
+	}
+	if len(operators) != 1 || operators[0].TenantID != l.tenantID {
+		t.Fatalf("operators = %+v", operators)
+	}
+	if operators[0].Name != "หอพักทดสอบ" {
+		t.Errorf("operator = %+v", operators[0])
+	}
+
+	// A tenant the account is not a member of is not found, not forbidden.
+	if _, err := l.repo.ResolveTenancyIn(ctx, accountID, ulid.New()); !errors.Is(err, ErrNotFound) {
+		t.Errorf("err = %v, want ErrNotFound for a tenant nobody is in", err)
+	}
+
+	// LINE redelivers. The second sighting of one event is not fresh.
+	fresh, err := l.repo.MarkWebhookEvent(ctx, "LINE", "01EVENT")
+	if err != nil || !fresh {
+		t.Fatalf("first delivery: fresh=%v err=%v", fresh, err)
+	}
+	fresh, err = l.repo.MarkWebhookEvent(ctx, "LINE", "01EVENT")
+	if err != nil || fresh {
+		t.Fatalf("redelivery: fresh=%v err=%v", fresh, err)
+	}
+
+	// The upsert, twice, because the second message in a conversation slides
+	// the window rather than failing on the primary key.
+	for i := 0; i < 2; i++ {
+		if err := l.repo.RememberConversationTenant(ctx, accountID, ChannelLINE, l.tenantID); err != nil {
+			t.Fatalf("RememberConversationTenant %d: %v", i+1, err)
+		}
+	}
+	if r := l.fake.Row(`SELECT COUNT(*) AS n FROM conversation_context WHERE account_id = ?`, accountID); r["n"] != float64(1) {
+		t.Errorf("conversation rows = %v, want 1", r["n"])
+	}
+	got, err := l.repo.ConversationTenant(ctx, accountID, ChannelLINE)
+	if err != nil || got != l.tenantID {
+		t.Fatalf("ConversationTenant = %q, %v", got, err)
+	}
+
+	// INV-34's safety net: the context stops resolving once the membership is
+	// no longer one that occupies, even if the row outlives it.
+	l.fake.Exec(`UPDATE membership SET status = 'LEFT' WHERE tenant_id = ?`, l.tenantID)
+	if _, err := l.repo.ConversationTenant(ctx, accountID, ChannelLINE); !errors.Is(err, ErrNotFound) {
+		t.Errorf("err = %v, want a context pointing at a membership that ended to stop resolving", err)
+	}
+
+	// And the same account now has nothing to route to.
+	_, operators, err = l.repo.Inbound(ctx, "U_resident")
+	if err != nil {
+		t.Fatalf("Inbound: %v", err)
+	}
+	if len(operators) != 0 {
+		t.Errorf("operators = %+v, want none after LEFT", operators)
+	}
+}
+
+// The office details behind the rich menu's ADMIN button.
+func TestLiveContactReadsTheCallersOwnBuilding(t *testing.T) {
+	l := newLive(t)
+	l.claim()
+	l.fake.Exec(`UPDATE building SET address = '123 ถนนทดสอบ' WHERE tenant_id = ?`, l.tenantID)
+
+	ctx := context.Background()
+	tenancy, err := l.repo.ResolveTenancy(ctx, l.accountID)
+	if err != nil {
+		t.Fatalf("ResolveTenancy: %v", err)
+	}
+	contact, err := l.repo.Contact(ctx, tenancy)
+	if err != nil {
+		t.Fatalf("Contact: %v", err)
+	}
+	if contact.OperatorName != "หอพักทดสอบ" || contact.BuildingName != "Oscar Apartment" {
+		t.Errorf("contact = %+v", contact)
+	}
+	if contact.Address != "123 ถนนทดสอบ" || contact.RoomNumber != "609" {
+		t.Errorf("contact = %+v", contact)
+	}
+}

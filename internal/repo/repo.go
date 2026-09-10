@@ -73,14 +73,18 @@ type Repo struct {
 	// carries no link rather than an address that answers nothing.
 	backofficeURL string
 
-	// lineScope is `account_identity.provider_scope` for LINE: the channel id
-	// of the login channel serving this environment.
+	// lineScope is `account_identity.provider_scope` for LINE: the LINE
+	// provider id, not a channel id.
 	//
-	// It is part of the identity's unique key, not decoration. The same person
-	// has a different LINE userId under each channel, so an identity row
-	// without the channel it was issued for would collide the day a second
-	// channel is added — which is exactly what adopting the MINI App channel
-	// would do.
+	// A LINE userId is unique within a provider. The Login channel serving the
+	// LIFF app and the Messaging API channel receiving the webhook recognise
+	// the same person only because both sit under one provider — which is also
+	// why STANDARD §4.3 forbids a per-tenant channel, in those words: "userIds
+	// won't match".
+	//
+	// Scoping by channel instead would file one person twice the day a second
+	// channel is added, and the webhook would never find the account that
+	// signed in through the app.
 	lineScope string
 }
 
@@ -146,6 +150,33 @@ type Tenancy struct {
 // suspended; what it cannot do is write, and every write path checks its own
 // guard rather than relying on this one.
 func (r *Repo) ResolveTenancy(ctx context.Context, accountID string) (*Tenancy, error) {
+	return r.resolveTenancy(ctx, accountID, "")
+}
+
+// ResolveTenancyIn resolves a named operator, and answers ErrNotFound unless
+// the account is actually a member of it.
+//
+// The name is treated as a claim to be checked, never as an answer. It reaches
+// this service from a LINE quick reply the sender tapped, which is to say from
+// the client — the one place STANDARD §9.4 says a tenant_id may never come
+// from. Checking it against membership is what makes accepting it safe, and a
+// tenant the account is not in is indistinguishable from one that does not
+// exist.
+func (r *Repo) ResolveTenancyIn(ctx context.Context, accountID, tenantID string) (*Tenancy, error) {
+	if tenantID == "" {
+		return nil, ErrNotFound
+	}
+	return r.resolveTenancy(ctx, accountID, tenantID)
+}
+
+func (r *Repo) resolveTenancy(ctx context.Context, accountID, wantTenantID string) (*Tenancy, error) {
+	filter := ""
+	args := []any{accountID}
+	if wantTenantID != "" {
+		filter = " AND m.tenant_id = ?2"
+		args = append(args, wantTenantID)
+	}
+
 	res, err := r.db.Query(ctx, `
 		SELECT m.tenant_id, m.membership_id,
 		       t.name AS operator_name,
@@ -173,8 +204,9 @@ func (r *Repo) ResolveTenancy(ctx context.Context, accountID string) (*Tenancy, 
 		  AND m.status IN ('ACTIVE', 'SUSPENDED')
 		  AND m.deleted_at IS NULL
 		  AND t.status = 'ACTIVE' AND t.deleted_at IS NULL
+		  `+filter+`
 		ORDER BY c.start_date DESC, c.contract_id DESC
-		LIMIT 1`, accountID)
+		LIMIT 1`, args...)
 	if err != nil {
 		return nil, fmt.Errorf("repo: resolve tenancy: %w", err)
 	}

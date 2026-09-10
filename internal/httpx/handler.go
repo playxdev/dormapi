@@ -41,6 +41,21 @@ type API struct {
 	// A recovery link points here rather than at this service, because the
 	// rebind needs a LINE ID token that only the app can produce.
 	AppLIFFURL string
+
+	// LineChannelSecret verifies that a webhook delivery came from LINE. It
+	// belongs to the Messaging API channel, and is neither the Login channel
+	// this service verifies ID tokens against nor the access token that sends
+	// a reply.
+	//
+	// Empty disables the endpoint rather than opening it: an unverifiable
+	// delivery is refused, because the payload names a resident and the reply
+	// goes to their chat.
+	LineChannelSecret string
+
+	// Messenger answers in the chat an event arrived from. Nil where no
+	// Messaging API token is configured, in which case events are still
+	// received, deduplicated and routed, and simply go unanswered.
+	Messenger line.Replier
 }
 
 func (a *API) Routes(allowedOrigins []string) http.Handler {
@@ -52,6 +67,13 @@ func (a *API) Routes(allowedOrigins []string) http.Handler {
 	r.Use(CORS(allowedOrigins))
 
 	r.Get("/healthz", a.health)
+
+	// Outside /api/v1, and outside the session middleware: the caller is LINE,
+	// authenticated by a signature over the body rather than by a token this
+	// service issued. It is registered only where it can be verified.
+	if a.LineChannelSecret != "" {
+		r.Post("/webhooks/line", a.lineWebhook)
+	}
 
 	r.Route("/api/v1", func(r chi.Router) {
 		r.With(RateLimit(30, 15*time.Minute)).Post("/auth/line", a.authLine)

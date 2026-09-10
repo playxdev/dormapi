@@ -48,6 +48,33 @@ type Config struct {
 	// being served. It is the `aud` claim every accepted ID token must carry.
 	LineChannelID string
 
+	// LineProviderID is what `account_identity.provider_scope` is set to for a
+	// LINE identity.
+	//
+	// A LINE userId is unique within a **provider**, not within a channel: the
+	// Login channel serving the LIFF app and the Messaging API channel
+	// receiving the webhook see the same person as the same userId only
+	// because both sit under one provider. Scoping an identity by the channel
+	// would therefore file the same person twice the day a second channel is
+	// added — which is exactly what adopting the MINI App channel would do.
+	//
+	// Set it before the first sign-in and never change it. Every identity
+	// already written is stored under the old value, so changing it locks out
+	// every resident and starts issuing them second accounts.
+	LineProviderID string
+
+	// LineChannelSecret verifies webhook deliveries from the Messaging API
+	// channel. Empty leaves the webhook endpoint unregistered: an endpoint
+	// that cannot verify a signature must not exist, because the payload names
+	// a resident and any reply goes to their chat.
+	LineChannelSecret string
+
+	// LineMessagingToken is the Messaging API channel access token, used to
+	// answer. Empty means events are received, deduplicated and routed, and go
+	// unanswered — which is the state the rich menu's ADMIN button is in
+	// today, and is better than refusing to start.
+	LineMessagingToken string
+
 	CloudflareAccountID string
 	D1DatabaseID        string
 	CloudflareAPIToken  string
@@ -77,6 +104,9 @@ func Load() (Config, error) {
 		Env:                 getenv("APP_ENV", "development"),
 		Addr:                listenAddr(),
 		LineChannelID:       os.Getenv("LINE_CHANNEL_ID"),
+		LineProviderID:      os.Getenv("LINE_PROVIDER_ID"),
+		LineChannelSecret:   os.Getenv("LINE_CHANNEL_SECRET"),
+		LineMessagingToken:  os.Getenv("LINE_MESSAGING_TOKEN"),
 		CloudflareAccountID: os.Getenv("CLOUDFLARE_ACCOUNT_ID"),
 		D1DatabaseID:        os.Getenv("D1_DATABASE_ID"),
 		CloudflareAPIToken:  os.Getenv("CLOUDFLARE_API_TOKEN"),
@@ -100,6 +130,9 @@ func Load() (Config, error) {
 	var missing []string
 	if cfg.LineChannelID == "" {
 		missing = append(missing, "LINE_CHANNEL_ID")
+	}
+	if cfg.LineProviderID == "" {
+		missing = append(missing, "LINE_PROVIDER_ID")
 	}
 	if cfg.CloudflareAccountID == "" {
 		missing = append(missing, "CLOUDFLARE_ACCOUNT_ID")

@@ -9,11 +9,11 @@ import (
 	"github.com/playxdev/dormapi/internal/d1/d1test"
 )
 
-// The identity carries the channel it was issued for. The same person has a
-// different LINE userId under each channel, so an identity row without it
-// would collide the day a second channel is added — which is what adopting the
-// MINI App channel would do.
-func TestALineIdentityIsScopedToItsChannel(t *testing.T) {
+// The identity carries the provider it was issued under, because that is what
+// a LINE userId is unique within. The Login channel and the Messaging API
+// channel see one person as one userId only because both sit under one
+// provider; scoping by channel would file them twice.
+func TestALineIdentityIsScopedToItsProvider(t *testing.T) {
 	h := newHarness(t, d1test.Answer{Rows: []map[string]any{{
 		"account_id": testAccount, "display_name": "ผู้เช่า ทดสอบ",
 	}}})
@@ -29,7 +29,7 @@ func TestALineIdentityIsScopedToItsChannel(t *testing.T) {
 	c := h.only()
 	requireSQL(t, c.SQL, "i.provider = 'LINE'", "i.provider_scope = ?1", "i.external_id = ?2")
 	if c.Params[0] != "2011358311" {
-		t.Errorf("provider_scope = %#v, want the login channel", c.Params[0])
+		t.Errorf("provider_scope = %#v, want the provider", c.Params[0])
 	}
 }
 

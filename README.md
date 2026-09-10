@@ -57,6 +57,7 @@ GET  /api/v1/me                 -> { user_id, resident_id, operator_name,
                                      property_id, property_name, room_id,
                                      display_name }
 GET  /healthz                   -> { status }
+POST /webhooks/line             LINE Messaging API deliveries
 ```
 
 **Phase 2 — tenant features.** Complete as of 1.0.0. `My Room` is covered by
@@ -171,6 +172,50 @@ A resident whose first attempt failed halfway retries and finishes: their own
 account still matches the guard. A second person scanning the same sheet
 changes no rows and is told the room is taken.
 
+### The Official Account
+
+`POST /webhooks/line` receives from the Messaging API. It is registered only
+when `LINE_CHANNEL_SECRET` is set: an endpoint that cannot verify a signature
+must not exist, because the payload names a resident and the reply lands in
+their chat. Verification is HMAC-SHA256 over the **raw body**, compared in
+constant time, before anything is decoded.
+
+Everything else answers 200, including events it does nothing with. LINE
+redelivers on any non-2xx, and an event this service cannot handle will not
+become handleable on the third attempt. Duplicates are caught by
+`webhook_event_seen`, keyed on the `webhookEventId`.
+
+**Which operator a message is about is resolved, never read from the payload**
+(STANDARD §4.3, INV-03). A delivery carries a LINE userId; that resolves
+through `account_identity` to an account, and the account's own occupying
+CLIENT memberships decide the rest:
+
+```text
+0 memberships   -> "link a room first". Never guess.
+1 membership    -> that operator.
+>1 membership   -> an unexpired conversation_context, or a quick reply asking
+                   which. Answering either would put one operator's business
+                   in a conversation about the other's (INV-32).
+```
+
+A quick reply comes back as a postback naming a tenant. That is a claim from
+the client, so `ResolveTenancyIn` checks it against the sender's memberships
+before anything is written or answered — a forged one selects nothing and is
+told the account has no room, the same answer a real non-membership gets.
+
+The context is a sliding 30 minutes and is read **only** to interpret incoming
+messages. An outgoing notification is addressed by the service that knows its
+own tenant; using a stale chat context to address one would send a resident
+another operator's business.
+
+`ADMIN` is the rich menu's button, which has been arriving and going unanswered
+since the menu was published. It answers with the operator, the building, the
+room and the address. Not a telephone number — `building` has no column for
+one, and it cannot be answered here until it does.
+
+Group and room events are ignored: a reply there shows one resident's business
+to everyone in the group.
+
 ### Money
 
 Every amount crossing the API is an integer number of **satang**
@@ -217,6 +262,9 @@ curl localhost:8080/healthz
 | `ADDR` | Listen address, default `:8080`. Leave unset on managed platforms — `PORT` is used instead |
 | `ALLOWED_ORIGINS` | Comma-separated browser origins permitted to call the API |
 | `LINE_CHANNEL_ID` | Numeric prefix of the LIFF ID; the `aud` every ID token must carry |
+| `LINE_PROVIDER_ID` | LINE **provider** id. Written to `account_identity.provider_scope` |
+| `LINE_CHANNEL_SECRET` | Messaging API channel secret; verifies webhook deliveries. Unset leaves `/webhooks/line` unregistered |
+| `LINE_MESSAGING_TOKEN` | Messaging API channel access token; sends replies. Unset means events are received and go unanswered |
 | `CLOUDFLARE_ACCOUNT_ID` | Cloudflare account holding the D1 database |
 | `D1_DATABASE_ID` | D1 database UUID |
 | `CLOUDFLARE_API_TOKEN` | Scoped token with D1 edit permission |
@@ -229,10 +277,25 @@ frontend reports that as "cannot reach the system", indistinguishable from the
 API being down.
 
 `LINE_CHANNEL_ID` changes per LINE environment. The Developing LIFF ID
-`2011361700-JZlB29PM` means `LINE_CHANNEL_ID=2011361700`. It is also written to
-`account_identity.provider_scope`, because the same person has a different LINE
-userId under each channel and an identity row without the channel would collide
-the day a second one is added.
+`2011361700-JZlB29PM` means `LINE_CHANNEL_ID=2011361700`.
+
+`LINE_PROVIDER_ID` is **not** a channel id, and the difference matters. A LINE
+userId is unique within a *provider*: the Login channel serving the LIFF app
+and the Messaging API channel receiving the webhook see one person as one
+userId only because both sit under one provider — which is also why the
+standard forbids a per-tenant channel, in those words, "userIds won't match".
+Scoping an identity by channel would file the same person twice the day a
+second channel is added, and the webhook would never find the account that
+signed in through the app.
+
+**Set it before the first sign-in and never change it.** Every identity already
+written is stored under the old value, so changing it locks every resident out
+and starts issuing them second accounts.
+
+The three LINE secrets do three different jobs and are not interchangeable: the
+Login channel id checks an ID token's audience, the Messaging channel *secret*
+verifies a webhook signature, and the Messaging channel *access token* sends a
+reply.
 
 `PII_PEPPER` is effectively permanent: rotating it invalidates every stored
 hash, so every outstanding QR stops working and every phone match fails.
@@ -325,10 +388,10 @@ would tell the tenant they owe nothing while the owner still thinks otherwise.
 
 ## Security
 
-The service holds three secrets: the Cloudflare API token, the JWT signing
-secret, and — once Phase 3 arrives — the LINE channel secret for verifying
-Messaging API webhook signatures. All come from the environment; none are
-committed.
+The service holds five secrets: the Cloudflare API token, the JWT signing
+secret, `PII_PEPPER`, the LINE Messaging channel secret that verifies webhook
+signatures, and the Messaging channel access token that sends replies. All come
+from the environment; none are committed.
 
 **Verifying a LINE identity needs no channel secret.** The ID token is checked
 with LINE's `POST /oauth2/v2.1/verify`, which authenticates the token itself.
@@ -348,6 +411,13 @@ unexported, and `ResolveTenancy` is the only thing that fills them. Outside
 `internal/repo` there is no way to construct one — so there is no way to write
 the query that leaks. Cross-tenant access answers **404**, never 403: a 403
 would confirm the id is real.
+
+**A webhook is authenticated by its signature.** `/webhooks/line` is the one
+endpoint no session reaches. HMAC-SHA256 over the raw body under the Messaging
+channel secret, compared in constant time, before the body is parsed —
+verifying after decoding would run a parser on input from anyone who found the
+URL, and a byte-by-byte comparison leaks how much of a forged signature was
+right.
 
 **Errors are stable codes, not messages.** The frontend maps codes to Thai copy
 of its own; a leaked SQL or LINE error would reach the user as noise. Details
@@ -378,7 +448,7 @@ internal/
 ├── config/            environment loading; reports all missing vars at once
 ├── d1/                Cloudflare D1 REST client, incl. atomic Batch
 │   └── d1test/        the same wire format, from scripted answers
-├── line/              LINE ID token verification
+├── line/              LINE ID token verification, webhook signatures, replies
 ├── auth/              session token issue and verify
 ├── httpx/             router, middleware, handlers
 ├── pii/               HMAC for invitation codes; a port of the backoffice's

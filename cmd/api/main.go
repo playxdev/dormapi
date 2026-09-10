@@ -75,14 +75,30 @@ func run() error {
 		return err
 	}
 
+	// The Official Account answers only where it can both verify a delivery
+	// and send a reply. Without the secret the endpoint is not registered at
+	// all; without the token it listens and stays silent, which is what the
+	// rich menu's ADMIN button already does.
+	var messenger line.Replier
+	switch {
+	case cfg.LineChannelSecret == "":
+		log.Warn("LINE webhook disabled: LINE_CHANNEL_SECRET is not set")
+	case cfg.LineMessagingToken == "":
+		log.Warn("LINE webhook will not reply: LINE_MESSAGING_TOKEN is not set")
+	default:
+		messenger = line.NewMessaging(cfg.LineMessagingToken)
+	}
+
 	api := &httpx.API{
-		Repo:       repo.New(db, pepper, cfg.LineChannelID, cfg.BackofficeURL),
-		Verifier:   line.NewVerifier(cfg.LineChannelID),
-		Issuer:     auth.NewIssuer(cfg.JWTSecret, 12*time.Hour),
-		Mail:       sender,
-		Log:        log,
-		APIBaseURL: cfg.APIBaseURL,
-		AppLIFFURL: cfg.AppLIFFURL,
+		Repo:              repo.New(db, pepper, cfg.LineProviderID, cfg.BackofficeURL),
+		Verifier:          line.NewVerifier(cfg.LineChannelID),
+		Issuer:            auth.NewIssuer(cfg.JWTSecret, 12*time.Hour),
+		Mail:              sender,
+		Log:               log,
+		APIBaseURL:        cfg.APIBaseURL,
+		AppLIFFURL:        cfg.AppLIFFURL,
+		LineChannelSecret: cfg.LineChannelSecret,
+		Messenger:         messenger,
 	}
 
 	srv := &http.Server{
