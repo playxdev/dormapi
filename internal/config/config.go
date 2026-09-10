@@ -55,6 +55,17 @@ type Config struct {
 	// JWTSecret signs the session tokens this service issues. Unrelated to any
 	// LINE credential.
 	JWTSecret []byte
+
+	// PIIPepper is the HMAC key personal data and invitation codes are hashed
+	// under, base64, and it must be byte-identical to the backoffice's
+	// PII_PEPPER: that service writes `invitation.secret_hash` and this one
+	// resolves a code by reproducing it.
+	//
+	// Rotating it invalidates every stored hash, so it is effectively
+	// permanent. There is deliberately no DATA_MASTER_KEY here — this service
+	// reads no encrypted field, and a key it does not need is a key that
+	// cannot leak from it.
+	PIIPepper string
 }
 
 func (c Config) IsProduction() bool { return c.Env == "production" }
@@ -70,6 +81,7 @@ func Load() (Config, error) {
 		D1DatabaseID:        os.Getenv("D1_DATABASE_ID"),
 		CloudflareAPIToken:  os.Getenv("CLOUDFLARE_API_TOKEN"),
 		JWTSecret:           []byte(os.Getenv("JWT_SECRET")),
+		PIIPepper:           os.Getenv("PII_PEPPER"),
 		BackofficeURL:       strings.TrimRight(os.Getenv("BACKOFFICE_URL"), "/"),
 		APIBaseURL:          strings.TrimRight(os.Getenv("API_BASE_URL"), "/"),
 		AppLIFFURL:          strings.TrimRight(os.Getenv("APP_LIFF_URL"), "/"),
@@ -100,6 +112,9 @@ func Load() (Config, error) {
 	}
 	if len(cfg.JWTSecret) < 32 {
 		missing = append(missing, "JWT_SECRET (at least 32 bytes)")
+	}
+	if cfg.PIIPepper == "" {
+		missing = append(missing, "PII_PEPPER")
 	}
 	if len(cfg.AllowedOrigins) == 0 {
 		missing = append(missing, "ALLOWED_ORIGINS")

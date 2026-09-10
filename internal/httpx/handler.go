@@ -13,7 +13,7 @@ import (
 	"github.com/playxdev/dormapi/internal/auth"
 	"github.com/playxdev/dormapi/internal/line"
 	"github.com/playxdev/dormapi/internal/mail"
-	"github.com/playxdev/dormapi/internal/store"
+	"github.com/playxdev/dormapi/internal/repo"
 	"github.com/playxdev/dormapi/internal/terms"
 )
 
@@ -27,7 +27,7 @@ type IdentityVerifier interface {
 }
 
 type API struct {
-	Store    *store.Store
+	Repo     *repo.Repo
 	Verifier IdentityVerifier
 	Issuer   *auth.Issuer
 	Mail     mail.Sender
@@ -66,21 +66,32 @@ func (a *API) Routes(allowedOrigins []string) http.Handler {
 
 		r.Group(func(r chi.Router) {
 			r.Use(a.requireSession)
-			r.Get("/me", a.me)
+
+			// Signed in, but not yet resolved to a lease. Setting an address
+			// and reviewing an invitation are exactly what an account with no
+			// room does, so neither may require one.
 			r.With(RateLimit(5, 15*time.Minute)).Post("/me/email", a.setEmail)
-			r.Get("/me/invoices", a.listInvoices)
-			r.Get("/me/invoices/{invoiceID}", a.getInvoice)
-			r.Get("/me/invoices/{invoiceID}/payment", a.getPaymentInfo)
-			r.Post("/me/invoices/{invoiceID}/payments", a.reportPayment)
-			r.Get("/me/repairs", a.listRepairs)
-			r.Post("/me/repairs", a.createRepair)
-			r.Get("/me/repairs/{repairID}", a.getRepair)
-			r.Get("/me/announcements", a.listAnnouncements)
-			r.Get("/me/announcements/{announcementID}", a.getAnnouncement)
-			r.Post("/me/announcements/{announcementID}/read", a.readAnnouncement)
-			r.Get("/me/meters", a.listMeters)
 			r.With(RateLimit(20, 15*time.Minute)).Get("/invites/{code}", a.getInvite)
 			r.Post("/invites/{code}/claim", a.claimInvite)
+
+			// Everything below resolves a membership first. The tenant is
+			// discovered there, once per request, and nothing downstream may
+			// choose one (STANDARD §9.4).
+			r.Group(func(r chi.Router) {
+				r.Use(a.requireTenancy)
+				r.Get("/me", a.me)
+				r.Get("/me/invoices", a.listInvoices)
+				r.Get("/me/invoices/{invoiceID}", a.getInvoice)
+				r.Get("/me/invoices/{invoiceID}/payment", a.getPaymentInfo)
+				r.Post("/me/invoices/{invoiceID}/payments", a.reportPayment)
+				r.Get("/me/repairs", a.listRepairs)
+				r.Post("/me/repairs", a.createRepair)
+				r.Get("/me/repairs/{repairID}", a.getRepair)
+				r.Get("/me/announcements", a.listAnnouncements)
+				r.Get("/me/announcements/{announcementID}", a.getAnnouncement)
+				r.Post("/me/announcements/{announcementID}/read", a.readAnnouncement)
+				r.Get("/me/meters", a.listMeters)
+			})
 		})
 	})
 
@@ -98,7 +109,7 @@ func (a *API) health(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
 
-	if err := a.Store.Ping(ctx); err != nil {
+	if err := a.Repo.Ping(ctx); err != nil {
 		a.Log.Error("health: database unreachable", "error", err)
 		// The error text can name the account and database; the status code
 		// and the log carry everything the caller is entitled to.
@@ -123,9 +134,11 @@ type authLineResponse struct {
 // authLine exchanges a LINE ID token for a session token, creating the user on
 // first sign-in.
 //
-// It deliberately does not report whether the user is new, nor whether they
-// have a tenancy. Resolving the tenancy is GET /me's job, which keeps the two
-// concerns — who you are, and what you may see — separate.
+// It deliberately does not report whether the account is new, nor whether it
+// reaches a lease. Resolving that is GET /me's job, which keeps the two
+// concerns — who you are, and what you may see — separate. The session names
+// an account and nothing else: which operator a request is for is resolved per
+// request from membership, never carried on the session (STANDARD §9.4).
 func (a *API) authLine(w http.ResponseWriter, r *http.Request) {
 	var req authLineRequest
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&req); err != nil {
@@ -146,15 +159,15 @@ func (a *API) authLine(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	user, err := a.Store.UserByLineSubject(r.Context(), identity.UserID, identity.DisplayName)
+	account, err := a.Repo.AccountByLine(r.Context(), identity.UserID, identity.DisplayName)
 	if err != nil {
-		a.Log.ErrorContext(r.Context(), "upsert user failed",
+		a.Log.ErrorContext(r.Context(), "resolve account failed",
 			"request_id", RequestIDFrom(r.Context()), "error", err)
 		writeError(w, http.StatusInternalServerError, "internal_error")
 		return
 	}
 
-	token, expires, err := a.Issuer.Issue(user.ID)
+	token, expires, err := a.Issuer.Issue(account.ID)
 	if err != nil {
 		a.Log.ErrorContext(r.Context(), "issue token failed",
 			"request_id", RequestIDFrom(r.Context()), "error", err)
@@ -169,8 +182,17 @@ func (a *API) authLine(w http.ResponseWriter, r *http.Request) {
 }
 
 type meResponse struct {
-	UserID       string `json:"user_id"`
-	TenantID     string `json:"tenant_id"`
+	UserID string `json:"user_id"`
+
+	// ResidentID is the party: the resident record the operator keeps. It was
+	// `tenant_id` before the move to XYZ, where a tenant is the business
+	// renting the system — the old name now denotes something else entirely.
+	ResidentID string `json:"resident_id"`
+
+	// OperatorName is the business the room is rented from. A person may rent
+	// from two, so the building name alone no longer says who this is.
+	OperatorName string `json:"operator_name"`
+
 	ContractID   string `json:"contract_id"`
 	PropertyID   string `json:"property_id"`
 	PropertyName string `json:"property_name"`
@@ -187,36 +209,23 @@ type meResponse struct {
 // Every field is derived from the session, never from the request. A client
 // that sends its own property_id or room_id is ignored.
 func (a *API) me(w http.ResponseWriter, r *http.Request) {
-	userID := userIDFrom(r.Context())
-
-	c, err := a.Store.ContextForUser(r.Context(), userID)
-	if err != nil {
-		if errors.Is(err, store.ErrNotFound) {
-			// Authenticated, but not linked to a room yet. The MINI App shows
-			// "your account is not linked to a dormitory".
-			writeError(w, http.StatusNotFound, "tenancy_not_found")
-			return
-		}
-		a.Log.ErrorContext(r.Context(), "resolve context failed",
-			"request_id", RequestIDFrom(r.Context()), "error", err)
-		writeError(w, http.StatusInternalServerError, "internal_error")
-		return
-	}
+	t := tenancyFrom(r.Context())
 
 	// property_id and room_id keep their names on the wire even though the
 	// schema calls them buildings and room numbers: the MINI App and the design
 	// document both speak of properties and rooms, and renaming the contract
 	// would break a deployed client for no gain.
 	writeJSON(w, http.StatusOK, meResponse{
-		UserID:        c.User.ID,
-		TenantID:      c.TenantID,
-		ContractID:    c.ContractID,
-		PropertyID:    c.BuildingID,
-		PropertyName:  c.BuildingName,
-		RoomID:        c.RoomNumber,
-		DisplayName:   c.User.Name,
-		Email:         c.User.Email,
-		EmailVerified: c.User.Verified,
+		UserID:        t.Account.ID,
+		ResidentID:    t.ResidentID,
+		OperatorName:  t.OperatorName,
+		ContractID:    t.ContractID,
+		PropertyID:    t.BuildingID,
+		PropertyName:  t.BuildingName,
+		RoomID:        t.RoomNumber,
+		DisplayName:   t.Account.Name,
+		Email:         t.Account.Email,
+		EmailVerified: t.Account.Verified,
 	})
 }
 
@@ -229,15 +238,57 @@ func (a *API) requireSession(next http.Handler) http.Handler {
 			return
 		}
 
-		userID, err := a.Issuer.Verify(raw)
+		accountID, err := a.Issuer.Verify(raw)
 		if err != nil {
 			writeError(w, http.StatusUnauthorized, "unauthorized")
 			return
 		}
 
-		ctx := context.WithValue(r.Context(), ctxKeyUserID, userID)
+		ctx := context.WithValue(r.Context(), ctxKeyAccountID, accountID)
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
+}
+
+// requireTenancy resolves which lease the caller may act on, once per request.
+//
+// This is the only place a tenant is chosen, and it is chosen from the
+// caller's own memberships. Nothing in the URL, the body or a header selects
+// it — a request that names a tenant the account is not a member of is
+// indistinguishable from one that names a tenant that does not exist
+// (STANDARD §9.4).
+//
+// It costs one round trip that the pre-XYZ code did not need, because that
+// version reached the resident record through a join in every query. The join
+// is gone: with a real membership table, resolving once and passing the result
+// to each statement is both cheaper than repeating the join and the thing that
+// makes a forgotten `tenant_id = ?` impossible to write.
+func (a *API) requireTenancy(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		tenancy, err := a.Repo.ResolveTenancy(r.Context(), accountIDFrom(r.Context()))
+		if err != nil {
+			if errors.Is(err, repo.ErrNotFound) {
+				// Authenticated, but not linked to a room yet. The MINI App
+				// shows "your account is not linked to a dormitory".
+				writeError(w, http.StatusNotFound, "tenancy_not_found")
+				return
+			}
+			a.Log.ErrorContext(r.Context(), "resolve tenancy failed",
+				"request_id", RequestIDFrom(r.Context()), "error", err)
+			writeError(w, http.StatusInternalServerError, "internal_error")
+			return
+		}
+
+		ctx := context.WithValue(r.Context(), ctxKeyTenancy, tenancy)
+		next.ServeHTTP(w, r.WithContext(ctx))
+	})
+}
+
+// tenancyFrom reads what requireTenancy resolved. It is never nil on a route
+// behind that middleware, and the routes that are not behind it do not call
+// this.
+func tenancyFrom(ctx context.Context) *repo.Tenancy {
+	t, _ := ctx.Value(ctxKeyTenancy).(*repo.Tenancy)
+	return t
 }
 
 func writeJSON(w http.ResponseWriter, status int, body any) {
@@ -259,7 +310,7 @@ func writeError(w http.ResponseWriter, status int, code string) {
 // server never sends a pre-formatted currency string, so a display change does
 // not need a deploy here.
 func (a *API) listInvoices(w http.ResponseWriter, r *http.Request) {
-	invoices, err := a.Store.InvoicesForUser(r.Context(), userIDFrom(r.Context()))
+	invoices, err := a.Repo.Invoices(r.Context(), tenancyFrom(r.Context()))
 	if err != nil {
 		a.Log.ErrorContext(r.Context(), "list invoices failed",
 			"request_id", RequestIDFrom(r.Context()), "error", err)
@@ -281,10 +332,10 @@ func (a *API) listInvoices(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *API) getInvoice(w http.ResponseWriter, r *http.Request) {
-	invoice, err := a.Store.InvoiceForUser(r.Context(),
-		userIDFrom(r.Context()), chi.URLParam(r, "invoiceID"))
+	invoice, err := a.Repo.Invoice(r.Context(),
+		tenancyFrom(r.Context()), chi.URLParam(r, "invoiceID"))
 	if err != nil {
-		if errors.Is(err, store.ErrNotFound) {
+		if errors.Is(err, repo.ErrNotFound) {
 			writeError(w, http.StatusNotFound, "invoice_not_found")
 			return
 		}
@@ -297,7 +348,7 @@ func (a *API) getInvoice(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *API) listRepairs(w http.ResponseWriter, r *http.Request) {
-	tickets, err := a.Store.TicketsForUser(r.Context(), userIDFrom(r.Context()))
+	tickets, err := a.Repo.Tickets(r.Context(), tenancyFrom(r.Context()))
 	if err != nil {
 		a.Log.ErrorContext(r.Context(), "list repairs failed",
 			"request_id", RequestIDFrom(r.Context()), "error", err)
@@ -308,10 +359,10 @@ func (a *API) listRepairs(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *API) getRepair(w http.ResponseWriter, r *http.Request) {
-	ticket, err := a.Store.TicketForUser(r.Context(),
-		userIDFrom(r.Context()), chi.URLParam(r, "repairID"))
+	ticket, err := a.Repo.Ticket(r.Context(),
+		tenancyFrom(r.Context()), chi.URLParam(r, "repairID"))
 	if err != nil {
-		if errors.Is(err, store.ErrNotFound) {
+		if errors.Is(err, repo.ErrNotFound) {
 			writeError(w, http.StatusNotFound, "repair_not_found")
 			return
 		}
@@ -326,7 +377,7 @@ func (a *API) getRepair(w http.ResponseWriter, r *http.Request) {
 // listMeters returns the water and electricity readings taken during the
 // caller's own tenancy.
 func (a *API) listMeters(w http.ResponseWriter, r *http.Request) {
-	meters, err := a.Store.MetersForUser(r.Context(), userIDFrom(r.Context()))
+	meters, err := a.Repo.Meters(r.Context(), tenancyFrom(r.Context()))
 	if err != nil {
 		a.Log.ErrorContext(r.Context(), "list meters failed",
 			"request_id", RequestIDFrom(r.Context()), "error", err)
@@ -343,7 +394,7 @@ func (a *API) listMeters(w http.ResponseWriter, r *http.Request) {
 // a handful of rows and already in hand, and a second D1 round trip to count
 // them would cost more than the loop.
 func (a *API) listAnnouncements(w http.ResponseWriter, r *http.Request) {
-	announcements, err := a.Store.AnnouncementsForUser(r.Context(), userIDFrom(r.Context()))
+	announcements, err := a.Repo.Announcements(r.Context(), tenancyFrom(r.Context()))
 	if err != nil {
 		a.Log.ErrorContext(r.Context(), "list announcements failed",
 			"request_id", RequestIDFrom(r.Context()), "error", err)
@@ -365,10 +416,10 @@ func (a *API) listAnnouncements(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *API) getAnnouncement(w http.ResponseWriter, r *http.Request) {
-	announcement, err := a.Store.AnnouncementForUser(r.Context(),
-		userIDFrom(r.Context()), chi.URLParam(r, "announcementID"))
+	announcement, err := a.Repo.Announcement(r.Context(),
+		tenancyFrom(r.Context()), chi.URLParam(r, "announcementID"))
 	if err != nil {
-		if errors.Is(err, store.ErrNotFound) {
+		if errors.Is(err, repo.ErrNotFound) {
 			writeError(w, http.StatusNotFound, "announcement_not_found")
 			return
 		}
@@ -385,12 +436,12 @@ func (a *API) getAnnouncement(w http.ResponseWriter, r *http.Request) {
 // Repeating it is deliberately not an error: the app marks on every view, and
 // only the first one writes a row.
 func (a *API) readAnnouncement(w http.ResponseWriter, r *http.Request) {
-	err := a.Store.MarkAnnouncementRead(r.Context(),
-		userIDFrom(r.Context()), chi.URLParam(r, "announcementID"))
+	err := a.Repo.MarkAnnouncementRead(r.Context(),
+		tenancyFrom(r.Context()), chi.URLParam(r, "announcementID"))
 	switch {
 	case err == nil:
 		writeJSON(w, http.StatusOK, map[string]string{"status": "read"})
-	case errors.Is(err, store.ErrNotFound):
+	case errors.Is(err, repo.ErrNotFound):
 		writeError(w, http.StatusNotFound, "announcement_not_found")
 	default:
 		a.Log.ErrorContext(r.Context(), "mark announcement read failed",
@@ -416,13 +467,13 @@ func (a *API) createRepair(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ticket, err := a.Store.CreateTicket(r.Context(),
-		userIDFrom(r.Context()), req.Title, req.Detail, req.Priority)
+	ticket, err := a.Repo.CreateTicket(r.Context(),
+		tenancyFrom(r.Context()), req.Title, req.Detail, req.Priority)
 	if err != nil {
 		switch {
-		case errors.Is(err, store.ErrInvalid):
+		case errors.Is(err, repo.ErrInvalid):
 			writeError(w, http.StatusBadRequest, "invalid_request")
-		case errors.Is(err, store.ErrNotFound):
+		case errors.Is(err, repo.ErrNotFound):
 			writeError(w, http.StatusNotFound, "tenancy_not_found")
 		default:
 			a.Log.ErrorContext(r.Context(), "create repair failed",
@@ -441,10 +492,11 @@ func (a *API) createRepair(w http.ResponseWriter, r *http.Request) {
 // is looking is what makes "you already claimed this" distinguishable from
 // "someone else did".
 func (a *API) getInvite(w http.ResponseWriter, r *http.Request) {
-	preview, err := a.Store.InviteByCode(r.Context(),
-		userIDFrom(r.Context()), strings.ToUpper(strings.TrimSpace(chi.URLParam(r, "code"))))
+	preview, err := a.Repo.InviteByCode(r.Context(),
+		accountIDFrom(r.Context()), strings.TrimSpace(chi.URLParam(r, "code")),
+		terms.LeaseVersion, terms.PDPAVersion)
 	if err != nil {
-		if errors.Is(err, store.ErrNotFound) {
+		if errors.Is(err, repo.ErrNotFound) {
 			writeError(w, http.StatusNotFound, "invite_not_found")
 			return
 		}
@@ -463,16 +515,16 @@ func (a *API) getInvite(w http.ResponseWriter, r *http.Request) {
 // different numbers than the ones that were shown, and the document versions
 // come from this build rather than from the request.
 func (a *API) claimInvite(w http.ResponseWriter, r *http.Request) {
-	code := strings.ToUpper(strings.TrimSpace(chi.URLParam(r, "code")))
+	code := strings.TrimSpace(chi.URLParam(r, "code"))
 
-	err := a.Store.ClaimInvite(r.Context(), userIDFrom(r.Context()), code,
-		terms.LeaseVersion, terms.PDPAVersion)
+	err := a.Repo.ClaimInvite(r.Context(), accountIDFrom(r.Context()), code,
+		terms.LeaseVersion, terms.PDPAVersion, RequestIDFrom(r.Context()))
 	switch {
 	case err == nil:
 		writeJSON(w, http.StatusCreated, map[string]string{"status": "claimed"})
-	case errors.Is(err, store.ErrAlreadyClaimed):
+	case errors.Is(err, repo.ErrAlreadyClaimed):
 		writeError(w, http.StatusConflict, "invite_already_claimed")
-	case errors.Is(err, store.ErrNotFound):
+	case errors.Is(err, repo.ErrNotFound):
 		writeError(w, http.StatusNotFound, "invite_not_found")
 	default:
 		a.Log.ErrorContext(r.Context(), "claim invite failed",
@@ -483,10 +535,10 @@ func (a *API) claimInvite(w http.ResponseWriter, r *http.Request) {
 
 // getPaymentInfo returns the QR payloads for one invoice.
 func (a *API) getPaymentInfo(w http.ResponseWriter, r *http.Request) {
-	info, err := a.Store.PaymentInfoForInvoice(r.Context(),
-		userIDFrom(r.Context()), chi.URLParam(r, "invoiceID"))
+	info, err := a.Repo.PaymentInfo(r.Context(),
+		tenancyFrom(r.Context()), chi.URLParam(r, "invoiceID"))
 	if err != nil {
-		if errors.Is(err, store.ErrNotFound) {
+		if errors.Is(err, repo.ErrNotFound) {
 			writeError(w, http.StatusNotFound, "invoice_not_found")
 			return
 		}
@@ -518,14 +570,14 @@ func (a *API) reportPayment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	err := a.Store.ReportPayment(r.Context(), userIDFrom(r.Context()),
+	err := a.Repo.ReportPayment(r.Context(), tenancyFrom(r.Context()),
 		chi.URLParam(r, "invoiceID"), req.AmountSatang, req.Method, req.Ref, req.IdempotencyKey)
 	switch {
 	case err == nil:
 		writeJSON(w, http.StatusAccepted, map[string]string{"status": "pending_verification"})
-	case errors.Is(err, store.ErrInvalid):
+	case errors.Is(err, repo.ErrInvalid):
 		writeError(w, http.StatusBadRequest, "invalid_request")
-	case errors.Is(err, store.ErrNotFound):
+	case errors.Is(err, repo.ErrNotFound):
 		writeError(w, http.StatusNotFound, "invoice_not_found")
 	default:
 		a.Log.ErrorContext(r.Context(), "report payment failed",

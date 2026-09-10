@@ -17,7 +17,8 @@ import (
 	"github.com/playxdev/dormapi/internal/httpx"
 	"github.com/playxdev/dormapi/internal/line"
 	"github.com/playxdev/dormapi/internal/mail"
-	"github.com/playxdev/dormapi/internal/store"
+	"github.com/playxdev/dormapi/internal/pii"
+	"github.com/playxdev/dormapi/internal/repo"
 )
 
 func main() {
@@ -66,8 +67,16 @@ func run() error {
 		log.Warn("mail transport not configured: verification and recovery links will not be delivered")
 	}
 
+	// The pepper must be usable before the first request, not at the first
+	// invitation: a wrong PII_PEPPER produces a hash that matches nothing, and
+	// the symptom is a QR that silently opens no room.
+	pepper, err := pii.ParsePepper(cfg.PIIPepper)
+	if err != nil {
+		return err
+	}
+
 	api := &httpx.API{
-		Store:      store.New(db, cfg.BackofficeURL),
+		Repo:       repo.New(db, pepper, cfg.LineChannelID, cfg.BackofficeURL),
 		Verifier:   line.NewVerifier(cfg.LineChannelID),
 		Issuer:     auth.NewIssuer(cfg.JWTSecret, 12*time.Hour),
 		Mail:       sender,

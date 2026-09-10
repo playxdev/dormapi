@@ -14,7 +14,8 @@ type ctxKey int
 
 const (
 	ctxKeyRequestID ctxKey = iota
-	ctxKeyUserID
+	ctxKeyAccountID
+	ctxKeyTenancy
 )
 
 // RequestID attaches an ID to every request so that a report of "I could not
@@ -35,8 +36,10 @@ func RequestIDFrom(ctx context.Context) string {
 	return id
 }
 
-func userIDFrom(ctx context.Context) string {
-	id, _ := ctx.Value(ctxKeyUserID).(string)
+// accountIDFrom reads the signed-in account. Empty outside an authenticated
+// route.
+func accountIDFrom(ctx context.Context) string {
+	id, _ := ctx.Value(ctxKeyAccountID).(string)
 	return id
 }
 
@@ -53,8 +56,8 @@ func (s *statusRecorder) WriteHeader(code int) {
 // Logger records one line per request.
 //
 // It deliberately logs no credential: not the Authorization header, not the
-// LINE ID token, not the session token. The request ID and the internal user
-// ID are enough to follow a request through the system.
+// LINE ID token, not the session token. The request ID and the account id are
+// enough to follow a request through the system.
 func Logger(log *slog.Logger) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -69,7 +72,7 @@ func Logger(log *slog.Logger) func(http.Handler) http.Handler {
 				"path", r.URL.Path,
 				"status", rec.status,
 				"duration_ms", time.Since(start).Milliseconds(),
-				"user_id", userIDFrom(r.Context()),
+				"account_id", accountIDFrom(r.Context()),
 			)
 		})
 	}

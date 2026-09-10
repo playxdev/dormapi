@@ -45,6 +45,13 @@ type Answer struct {
 
 	// Failure, when set, is returned as a D1 API error instead of a result.
 	Failure string
+
+	// From, when set, builds the rows from the statements already sent. It is
+	// for the writes whose correctness is that a value read back matches one
+	// generated inside the call - an id minted by the code under test cannot
+	// be scripted in advance, and a fixed answer would test the opposite of
+	// what happens in production.
+	From func(prior []Call) []map[string]any
 }
 
 // New starts a server that answers the given statements in order.
@@ -84,6 +91,9 @@ func (f *Server) serve(w http.ResponseWriter, r *http.Request) {
 	var a Answer
 	if n < len(f.answers) {
 		a = f.answers[n]
+	}
+	if a.From != nil {
+		a.Rows = a.From(f.Calls[:n])
 	}
 	if a.Rows == nil {
 		a.Rows = []map[string]any{}

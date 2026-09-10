@@ -15,7 +15,7 @@ import (
 	"time"
 
 	appmail "github.com/playxdev/dormapi/internal/mail"
-	"github.com/playxdev/dormapi/internal/store"
+	"github.com/playxdev/dormapi/internal/repo"
 )
 
 // How long each kind of link stays usable.
@@ -82,9 +82,9 @@ func (a *API) setEmail(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	userID := userIDFrom(r.Context())
-	if err := a.Store.SetEmail(r.Context(), userID, address); err != nil {
-		if errors.Is(err, store.ErrEmailTaken) {
+	accountID := accountIDFrom(r.Context())
+	if err := a.Repo.SetEmail(r.Context(), accountID, address); err != nil {
+		if errors.Is(err, repo.ErrEmailTaken) {
 			writeError(w, http.StatusConflict, "email_taken")
 			return
 		}
@@ -94,7 +94,7 @@ func (a *API) setEmail(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := a.sendVerification(r.Context(), userID, address); err != nil {
+	if err := a.sendVerification(r.Context(), accountID, address); err != nil {
 		// The address is saved either way. Failing the request here would
 		// leave the tenant unable to tell that, and retrying is harmless.
 		a.Log.ErrorContext(r.Context(), "send verification failed",
@@ -105,12 +105,12 @@ func (a *API) setEmail(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusAccepted, map[string]string{"status": "verification_sent"})
 }
 
-func (a *API) sendVerification(ctx context.Context, userID, address string) error {
+func (a *API) sendVerification(ctx context.Context, accountID, address string) error {
 	raw, hash, err := newToken()
 	if err != nil {
 		return err
 	}
-	if err := a.Store.IssueAuthToken(ctx, "email_verify", userID, hash, address,
+	if err := a.Repo.IssueAuthToken(ctx, "EMAIL_VERIFY", accountID, hash, address,
 		time.Now().Add(verifyTokenTTL), ""); err != nil {
 		return err
 	}
@@ -136,14 +136,17 @@ func (a *API) verifyEmail(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	userID, err := a.Store.ConsumeAuthToken(r.Context(), "email_verify", hashToken(token))
+	// The address the link was sent to comes back with the token. Verifying
+	// whatever address happens to be on the account now would let a change
+	// made after the mail went out inherit a proof it never earned.
+	accountID, address, err := a.Repo.ConsumeAuthToken(r.Context(), "EMAIL_VERIFY", hashToken(token))
 	if err != nil {
 		// Expired, already used, or never existed. All three mean the same
 		// thing to the person holding it.
 		writePage(w, http.StatusBadRequest, "ลิงก์หมดอายุ", "กรุณาขอลิงก์ยืนยันใหม่จากแอป")
 		return
 	}
-	if err := a.Store.MarkEmailVerified(r.Context(), userID); err != nil {
+	if err := a.Repo.MarkEmailVerified(r.Context(), accountID, address); err != nil {
 		a.Log.ErrorContext(r.Context(), "mark verified failed",
 			"request_id", RequestIDFrom(r.Context()), "error", err)
 		writePage(w, http.StatusInternalServerError, "เกิดข้อผิดพลาด", "กรุณาลองใหม่อีกครั้ง")
@@ -173,9 +176,9 @@ func (a *API) requestRecovery(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	userID, err := a.Store.UserByVerifiedEmail(r.Context(), address)
+	accountID, err := a.Repo.AccountByVerifiedEmail(r.Context(), address)
 	if err != nil {
-		if !errors.Is(err, store.ErrNotFound) {
+		if !errors.Is(err, repo.ErrNotFound) {
 			a.Log.ErrorContext(r.Context(), "recovery lookup failed",
 				"request_id", RequestIDFrom(r.Context()), "error", err)
 		}
@@ -185,7 +188,7 @@ func (a *API) requestRecovery(w http.ResponseWriter, r *http.Request) {
 
 	raw, hash, err := newToken()
 	if err == nil {
-		err = a.Store.IssueAuthToken(r.Context(), "recovery", userID, hash, address,
+		err = a.Repo.IssueAuthToken(r.Context(), "RECOVERY", accountID, hash, address,
 			time.Now().Add(recoveryTokenTTL), "")
 	}
 	if err == nil {
@@ -239,14 +242,14 @@ func (a *API) rebindRecovery(w http.ResponseWriter, r *http.Request) {
 	// The token is spent before anything else changes. A rebind that fails
 	// afterwards costs the tenant one more email; a token that survives a
 	// failed rebind is a live link to someone else's account.
-	userID, err := a.Store.ConsumeAuthToken(r.Context(), "recovery", hashToken(req.RecoveryToken))
+	accountID, _, err := a.Repo.ConsumeAuthToken(r.Context(), "RECOVERY", hashToken(req.RecoveryToken))
 	if err != nil {
 		writeError(w, http.StatusUnauthorized, "recovery_token_invalid")
 		return
 	}
 
-	old, err := a.Store.LineSubjectFor(r.Context(), userID)
-	if err != nil && !errors.Is(err, store.ErrNotFound) {
+	old, err := a.Repo.LineSubjectFor(r.Context(), accountID)
+	if err != nil && !errors.Is(err, repo.ErrNotFound) {
 		a.Log.ErrorContext(r.Context(), "read old subject failed",
 			"request_id", RequestIDFrom(r.Context()), "error", err)
 		writeError(w, http.StatusInternalServerError, "internal_error")
@@ -254,22 +257,28 @@ func (a *API) rebindRecovery(w http.ResponseWriter, r *http.Request) {
 	}
 	if old == identity.UserID {
 		// Already this account. Nothing to move; issue a session and stop.
-		a.issueSession(w, r, userID)
+		a.issueSession(w, r, accountID)
 		return
 	}
 
-	if err := a.Store.RebindLine(r.Context(), userID, old, identity.UserID,
-		"line_rebind", "", RequestIDFrom(r.Context())); err != nil {
+	if err := a.Repo.RebindLine(r.Context(), accountID, old, identity.UserID,
+		RequestIDFrom(r.Context())); err != nil {
+		if errors.Is(err, repo.ErrConflict) {
+			// The LINE account presenting the token already signs in as
+			// somebody else. Moving it would take that person's account away.
+			writeError(w, http.StatusConflict, "line_account_in_use")
+			return
+		}
 		a.Log.ErrorContext(r.Context(), "rebind failed",
 			"request_id", RequestIDFrom(r.Context()), "error", err)
 		writeError(w, http.StatusInternalServerError, "internal_error")
 		return
 	}
-	a.issueSession(w, r, userID)
+	a.issueSession(w, r, accountID)
 }
 
-func (a *API) issueSession(w http.ResponseWriter, r *http.Request, userID string) {
-	token, expires, err := a.Issuer.Issue(userID)
+func (a *API) issueSession(w http.ResponseWriter, r *http.Request, accountID string) {
+	token, expires, err := a.Issuer.Issue(accountID)
 	if err != nil {
 		a.Log.ErrorContext(r.Context(), "issue token failed",
 			"request_id", RequestIDFrom(r.Context()), "error", err)

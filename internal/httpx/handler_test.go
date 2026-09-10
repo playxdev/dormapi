@@ -14,7 +14,8 @@ import (
 	"github.com/playxdev/dormapi/internal/d1/d1test"
 	"github.com/playxdev/dormapi/internal/line"
 	appmail "github.com/playxdev/dormapi/internal/mail"
-	"github.com/playxdev/dormapi/internal/store"
+	"github.com/playxdev/dormapi/internal/pii"
+	"github.com/playxdev/dormapi/internal/repo"
 )
 
 // stubVerifier answers as LINE would, without asking it.
@@ -49,8 +50,12 @@ func (m *recordingMail) Send(_ context.Context, msg appmail.Message) error {
 func newAPI(t *testing.T, fake *d1test.Server, verifier IdentityVerifier, mailer appmail.Sender) *API {
 	t.Helper()
 	issuer := auth.NewIssuer([]byte("test-secret-at-least-32-bytes-long!!"), 0)
+	pepper, err := pii.ParsePepper("ZGV2LW9ubHktcGlpLXBlcHBlci0zMi1ieXRlcyEhISE=")
+	if err != nil {
+		t.Fatalf("parse pepper: %v", err)
+	}
 	return &API{
-		Store:      store.New(fake.Client(), "https://backoffice.example"),
+		Repo:       repo.New(fake.Client(), pepper, "2011358311", "https://backoffice.example"),
 		Verifier:   verifier,
 		Issuer:     issuer,
 		Mail:       mailer,
@@ -82,7 +87,7 @@ func TestRequestRecoveryAnswersTheSameForEveryAddress(t *testing.T) {
 		{
 			name:    "a verified address",
 			body:    `{"email":"tenant@example.com"}`,
-			answers: []d1test.Answer{{Rows: []map[string]any{{"id": "user-1"}}}, {Changes: 1}},
+			answers: []d1test.Answer{{Rows: []map[string]any{{"account_id": "01ACCOUNT"}}}, {Changes: 1}},
 			mails:   1,
 		},
 		{
@@ -151,7 +156,7 @@ func TestRequestRecoveryAnswersTheSameForEveryAddress(t *testing.T) {
 func TestRequestRecoverySaysNothingWhenTheMailFails(t *testing.T) {
 	// A failure to send is this service's problem, and reporting it would
 	// report that the address is known. Logged, never told.
-	fake := d1test.New(t, d1test.Answer{Rows: []map[string]any{{"id": "user-1"}}}, d1test.Answer{Changes: 1})
+	fake := d1test.New(t, d1test.Answer{Rows: []map[string]any{{"account_id": "01ACCOUNT"}}}, d1test.Answer{Changes: 1})
 	api := newAPI(t, fake, &stubVerifier{}, &recordingMail{err: io.ErrUnexpectedEOF})
 
 	rec := postJSON(api.requestRecovery, "/recovery/request", `{"email":"tenant@example.com"}`)
@@ -223,9 +228,9 @@ func TestRebindRejectsASpentToken(t *testing.T) {
 func TestRebindMovesTheIdentityAndIssuesASession(t *testing.T) {
 	fake := d1test.New(t,
 		// consume the recovery token
-		d1test.Answer{Rows: []map[string]any{{"user_id": "user-1"}}},
+		d1test.Answer{Rows: []map[string]any{{"account_id": "01ACCOUNT", "sent_to": "tenant@example.com"}}},
 		// read the LINE subject the account has now
-		d1test.Answer{Rows: []map[string]any{{"subject": "U_old"}}},
+		d1test.Answer{Rows: []map[string]any{{"external_id": "U_old"}}},
 		// audit, then move
 		d1test.Answer{Changes: 1},
 		d1test.Answer{Changes: 1},
@@ -252,11 +257,20 @@ func TestRebindMovesTheIdentityAndIssuesASession(t *testing.T) {
 	if len(fake.Calls) != 4 {
 		t.Fatalf("ran %d statements, want 4: %#v", len(fake.Calls), fake.Calls)
 	}
-	if !strings.Contains(fake.Calls[2].SQL, "identity_audit_logs") {
+	if !strings.Contains(fake.Calls[2].SQL, "INSERT INTO audit_event") {
 		t.Error("the rebind was not audited before the identity moved")
 	}
-	if !strings.Contains(fake.Calls[3].SQL, "UPDATE identities") {
+	if !strings.Contains(fake.Calls[3].SQL, "UPDATE account_identity") {
 		t.Error("the identity was never moved")
+	}
+
+	// A LINE userId is a credential-adjacent identifier. The audit row records
+	// enough to match one rebind to another and not enough to read an account
+	// out of the log.
+	for _, p := range fake.Calls[2].Params {
+		if p == "U_old" || p == "U_new" {
+			t.Error("the audit row carries a LINE userId in the clear")
+		}
 	}
 }
 
@@ -265,8 +279,8 @@ func TestRebindOnTheSameAccountChangesNothing(t *testing.T) {
 	// have. Nothing to move, and moving it would write an audit row saying an
 	// account changed hands when it did not.
 	fake := d1test.New(t,
-		d1test.Answer{Rows: []map[string]any{{"user_id": "user-1"}}},
-		d1test.Answer{Rows: []map[string]any{{"subject": "U_same"}}},
+		d1test.Answer{Rows: []map[string]any{{"account_id": "01ACCOUNT", "sent_to": "tenant@example.com"}}},
+		d1test.Answer{Rows: []map[string]any{{"external_id": "U_same"}}},
 	)
 	api := newAPI(t, fake, &stubVerifier{identity: &line.Identity{UserID: "U_same"}}, &recordingMail{})
 
