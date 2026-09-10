@@ -31,15 +31,6 @@ type InvitePreview struct {
 	DepositSatang int64  `json:"deposit_satang"`
 	StartDate     string `json:"start_date"`
 
-	// TenantName is what ResidentName used to be called, kept because the
-	// deployed MINI App reads it (`mini/src/pages/onboarding.js`). Under XYZ a
-	// "tenant" is the business renting the system, so the name was actively
-	// misleading. Remove it once the app has shipped a build reading
-	// resident_name.
-	//
-	// Deprecated: use ResidentName.
-	TenantName string `json:"tenant_name"`
-
 	AlreadyClaimed bool `json:"already_claimed"`
 	ClaimedBySelf  bool `json:"claimed_by_self"`
 }
@@ -146,7 +137,6 @@ func (r *Repo) InviteByCode(ctx context.Context, accountID, code, termsVersion, 
 		BuildingName:   inv.buildingName,
 		RoomNumber:     inv.roomNumber,
 		ResidentName:   inv.residentName,
-		TenantName:     inv.residentName,
 		RentSatang:     inv.rent,
 		DepositSatang:  inv.deposit,
 		StartDate:      inv.startDate,

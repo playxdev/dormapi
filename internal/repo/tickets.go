@@ -31,7 +31,7 @@ const ticketSelect = `
 	WHERE k.tenant_id = ?1 AND k.party_id = ?2 AND k.deleted_at IS NULL`
 
 func (r *Repo) Tickets(ctx context.Context, t *Tenancy) ([]Ticket, error) {
-	res, err := r.db.Query(ctx, ticketSelect+` ORDER BY k.created_at DESC`,
+	res, err := r.db.Query(ctx, ticketSelect+` ORDER BY k.created_at DESC, k.ticket_id DESC`,
 		t.tenantID, t.partyID)
 	if err != nil {
 		return nil, fmt.Errorf("repo: list tickets: %w", err)

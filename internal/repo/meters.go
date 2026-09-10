@@ -48,7 +48,7 @@ func (r *Repo) Meters(ctx context.Context, t *Tenancy) ([]Meter, error) {
 		  AND m.status IN ('RECORDED', 'CONFIRMED')
 		  AND m.deleted_at IS NULL
 		  AND c.deleted_at IS NULL
-		ORDER BY m.period DESC, m.kind`, t.tenantID, t.partyID)
+		ORDER BY m.period DESC, m.kind, m.reading_id`, t.tenantID, t.partyID)
 	if err != nil {
 		return nil, fmt.Errorf("repo: list meters: %w", err)
 	}

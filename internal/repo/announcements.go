@@ -60,7 +60,7 @@ const announcementSelect = `
 func (r *Repo) Announcements(ctx context.Context, t *Tenancy) ([]Announcement, error) {
 	res, err := r.db.Query(ctx, announcementSelect+`
 		GROUP BY a.announcement_id
-		ORDER BY a.pinned DESC, a.published_at DESC`,
+		ORDER BY a.pinned DESC, a.published_at DESC, a.announcement_id DESC`,
 		t.tenantID, t.partyID, t.Account.ID, today())
 	if err != nil {
 		return nil, fmt.Errorf("repo: list announcements: %w", err)

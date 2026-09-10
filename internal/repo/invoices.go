@@ -79,7 +79,7 @@ const invoiceSelect = `
 // The party comes from the resolved membership, never from the request, so no
 // caller can name someone else's invoice.
 func (r *Repo) Invoices(ctx context.Context, t *Tenancy) ([]Invoice, error) {
-	res, err := r.db.Query(ctx, invoiceSelect+` ORDER BY i.period DESC`, t.tenantID, t.partyID)
+	res, err := r.db.Query(ctx, invoiceSelect+` ORDER BY i.period DESC, i.invoice_id DESC`, t.tenantID, t.partyID)
 	if err != nil {
 		return nil, fmt.Errorf("repo: list invoices: %w", err)
 	}
@@ -122,7 +122,7 @@ func (r *Repo) Invoice(ctx context.Context, t *Tenancy, invoiceID string) (*Invo
 		FROM payment
 		WHERE tenant_id = ?1 AND invoice_id = ?2
 		  AND status <> 'REJECTED' AND deleted_at IS NULL
-		ORDER BY paid_at`, t.tenantID, invoiceID)
+		ORDER BY paid_at, payment_id`, t.tenantID, invoiceID)
 	if err != nil {
 		return nil, fmt.Errorf("repo: get invoice payments: %w", err)
 	}

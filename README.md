@@ -28,9 +28,12 @@ pre-XYZ schema had a `tenants` table meaning the second, and this service used
 the word that way throughout.
 
 It no longer does. On the wire, `tenant_id` became `resident_id` in `GET /me`,
-and the invite preview gained `resident_name`. `tenant_name` is still sent
-beside it because the deployed MINI App reads it; it goes when the app ships a
-build that does not.
+and the invite preview's `tenant_name` became `resident_name`.
+
+**Deploy `mini` first, or together.** Those two fields are the only breaking
+change in the move to XYZ, and a build of the app that predates it reads
+`tenant_name` — against a newer API it would render the review screen with no
+resident on it.
 
 ```text
 ACCOUNT      one person, no tenant_id, no role, no LINE id   (global)
@@ -268,6 +271,35 @@ its own INSERT.
 
 All of this was established by probing the live API, not assumed.
 
+## Testing
+
+```bash
+go test ./...
+```
+
+Two layers, because they answer different questions.
+
+The scripted fake in `internal/d1/d1test` speaks D1's wire format and returns
+answers written by the test. It proves what a statement **says** — that the
+tenant is bound, that the guard is in the WHERE clause, that a resident's
+report is written `REPORTED` rather than `VERIFIED`.
+
+It cannot prove the statement is **valid**. A column that does not exist, a
+CHECK the value fails, a foreign key with no parent: a fake answers all of them
+as readily as it answers a correct query. So `internal/repo/livedb_test.go`
+applies the backoffice's migrations to an in-process SQLite database and serves
+the same wire format over it, and `integration_test.go` drives the claim, the
+reads, the payment report and the whole recovery flow through it.
+
+The schema is read from the `dormplace` checkout beside this one — never
+copied here, because a copy drifts and a test passing against last month's
+schema is worse than no test. Point `DORMPLACE_MIGRATIONS` at that directory to
+run from elsewhere; without it those tests skip rather than invent a schema.
+
+**What this does not cover.** `POST /api/v1/auth/line` needs an ID token only
+LINE can mint, so sign-in end to end is a phone with the app on it. The tests
+cover everything the token unlocks.
+
 ### Migrations
 
 Run from the `dormplace` checkout, which owns them:
@@ -345,6 +377,7 @@ cmd/api/main.go        startup, graceful shutdown
 internal/
 ├── config/            environment loading; reports all missing vars at once
 ├── d1/                Cloudflare D1 REST client, incl. atomic Batch
+│   └── d1test/        the same wire format, from scripted answers
 ├── line/              LINE ID token verification
 ├── auth/              session token issue and verify
 ├── httpx/             router, middleware, handlers

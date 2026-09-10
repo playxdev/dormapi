@@ -278,6 +278,14 @@ func now() string { return time.Now().UTC().Format(timeFormat) }
 // caller chose rather than the moment of the write.
 func timestamp(t time.Time) string { return t.UTC().Format(timeFormat) }
 
+// Every list in this package orders by its id after its natural key.
+//
+// Two payments reported in the same second, two repairs filed in the same
+// millisecond, two readings for one period across two rooms: without the
+// tiebreaker SQLite is free to return them in either order, and a list that
+// reorders between two requests is a list that can repeat or skip a row when
+// it is paged. The ids are ULIDs, so ordering by one is ordering by time.
+
 // isUnique reports whether a D1 error is a unique-index violation. It is the
 // only error text this package matches on: the alternative is a SELECT before
 // every INSERT, which does not close the race it is trying to close.
